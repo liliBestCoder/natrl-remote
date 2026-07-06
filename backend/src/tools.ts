@@ -16,14 +16,16 @@ import { generateWaveform, getProbeCommands } from "./ir-engine-client";
 import { publishCommand } from "./mqtt-client";
 import { Device, DeviceState, IRCommand, ProbeSession } from "./types";
 import { config } from "./config";
+import { SessionState, getSession } from "./session-store";
 
 // ─── Tool Context (mutable, accumulates results for frontend response) ───
 
 export interface ToolContext {
   userId: string;
-  message: string;                    // Accumulated for final response
-  irCommand?: IRCommand;             // Last generated IR command (phone emits this)
-  phase: "discovery" | "setup" | "control";
+  session: SessionState;              // Live session state (read/write)
+  message: string;
+  irCommand?: IRCommand;
+  phase: "discovery" | "registration" | "control";
   setupStep?: "probing" | "verifying" | "done";
   deviceId?: string;
   probeBrand?: string;
@@ -167,6 +169,26 @@ export const TOOL_DEFINITIONS = [
     },
   },
 
+  {
+    type: "function" as const,
+    function: {
+      name: "register_device",
+      description:
+        "注册设备（起别名并激活）。探测成功后调用，用户提供设备名字。" +
+        "例如用户说'叫大白' → name='大白'。注册成功后设备进入阶段3（日常使用）。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "用户给设备起的名字",
+          },
+        },
+        required: ["name"],
+      },
+    },
+  },
+
   // ── Daily Control ──
   {
     type: "function" as const,
@@ -288,6 +310,8 @@ export async function executeToolCall(
       return execGetDeviceState(args, ctx);
     case "list_devices":
       return execListDevices(args, ctx);
+    case "register_device":
+      return execRegisterDevice(args, ctx);
     case "remove_device":
       return execRemoveDevice(args, ctx);
     default:
@@ -333,8 +357,17 @@ async function execDiscoverDevice(
 
   await setDevice(device);
 
-  ctx.phase = "setup";
+  ctx.phase = "discovery";
   ctx.deviceId = device.id;
+
+  // Update session state
+  ctx.session.phase = "discovery";
+  ctx.session.deviceId = device.id;
+  ctx.session.deviceType = device.deviceType;
+  ctx.session.room = device.room;
+  ctx.session.probingActive = false;
+  ctx.session.matchedBrand = null as any;
+  ctx.session.brandHint = undefined;
 
   return JSON.stringify({
     success: true,
@@ -343,7 +376,7 @@ async function execDiscoverDevice(
     room: device.room,
     device_type: device.deviceType,
     verified: false,
-    hint: "设备已创建。下一步应调用 probe_brand 开始品牌探测。",
+    hint: "设备已创建。请先询问用户品牌的名称，然后调用 probe_brand 开始探测。",
   });
 }
 
@@ -376,6 +409,7 @@ async function execProbeBrand(
   let orderedProbes = allProbes;
   const hint = args.brand_hint?.trim();
   if (hint) {
+    ctx.session.brandHint = hint;
     const matchedCodes = matchBrandHint(hint);
     if (matchedCodes.length > 0) {
       // Move matched brands to the front
@@ -384,6 +418,8 @@ async function execProbeBrand(
       orderedProbes = [...matchedProbes, ...otherProbes];
       console.log(`[probe] brand hint "${hint}" matched: ${matchedCodes.join(", ")}, reordered ${matchedProbes.length} to front`);
     }
+  } else {
+    ctx.session.brandHint = undefined;
   }
 
   // Start new probe session
@@ -415,12 +451,20 @@ async function execProbeBrand(
 
   // Return IR command for phone emission
   ctx.irCommand = firstStep.irCommand;
-  ctx.phase = "setup";
+  ctx.phase = "discovery";
   ctx.setupStep = "probing";
   ctx.deviceId = device.id;
   ctx.probeBrand = firstStep.brandCode;
   ctx.probeStep = 1;
   ctx.probeTotal = session.steps.length;
+
+  // Update session state
+  ctx.session.phase = "discovery";
+  ctx.session.probingActive = true;
+  ctx.session.probeStep = 1;
+  ctx.session.probeTotal = session.steps.length;
+  ctx.session.currentProbeBrand = firstStep.brandCode;
+  ctx.session.deviceId = device.id;
 
   const hintMsg = hint ? `优先尝试用户提到的品牌: ${hint}。` : "";
 
@@ -468,10 +512,10 @@ async function execRespondProbe(
   }
 
   ctx.deviceId = device.id;
-  ctx.phase = "setup";
+  ctx.phase = "discovery";
 
   if (reacted && currentStep) {
-    // Brand matched!
+    // Brand matched! Move to registration phase
     session.matchedBrand = currentStep.brandCode;
     session.complete = true;
     probeSessions.delete(device.id);
@@ -480,12 +524,18 @@ async function execRespondProbe(
     device.protocol = "NEC";
     await setDevice(device);
 
-    ctx.setupStep = "verifying";
+    // Update session → registration phase
+    ctx.phase = "registration";
+    ctx.session.phase = "registration";
+    ctx.session.matchedBrand = currentStep.brandCode;
+    ctx.session.probingActive = false;
+    ctx.setupStep = undefined;
+
     return JSON.stringify({
       success: true,
       matched_brand: currentStep.brandCode,
       status: "brand_identified",
-      message: "品牌匹配成功。下一步应调用 verify_device 让用户确认空调吹冷风是否正常。",
+      message: "品牌匹配成功！请询问用户'想给它起个什么名字？'，等待用户提供名字后调用 register_device。",
     });
   }
 
@@ -495,7 +545,11 @@ async function execRespondProbe(
     session.complete = true;
     probeSessions.delete(device.id);
 
+    ctx.session.probingActive = false;
+    ctx.session.phase = "discovery";
+    ctx.phase = "discovery";
     ctx.setupStep = undefined;
+
     return JSON.stringify({
       success: false,
       status: "exhausted",
@@ -512,17 +566,27 @@ async function execRespondProbe(
   );
   await publishCommand(device.mqttTopic, payload);
 
+  const attemptedCount = session.steps.filter((s) => s.attempted).length;
+
   ctx.irCommand = nextStep.irCommand;
+  ctx.phase = "discovery";
   ctx.setupStep = "probing";
   ctx.probeBrand = nextStep.brandCode;
-  ctx.probeStep = session.steps.filter((s) => s.attempted).length;
+  ctx.probeStep = attemptedCount;
   ctx.probeTotal = session.steps.length;
+
+  // Update session state
+  ctx.session.probeStep = attemptedCount;
+  ctx.session.probeTotal = session.steps.length;
+  ctx.session.currentProbeBrand = nextStep.brandCode;
+  ctx.session.probingActive = true;
+  ctx.session.phase = "discovery";
 
   return JSON.stringify({
     success: true,
     current_brand: nextStep.brandCode,
-    step: ctx.probeStep,
-    total: ctx.probeTotal,
+    step: attemptedCount,
+    total: session.steps.length,
     message: `下一个探测品牌: ${nextStep.brandCode}。红外信号已通过手机发射。询问用户是否有反应。`,
   });
 }
@@ -549,6 +613,8 @@ async function execVerifyDevice(
     device.verified = true;
     await setDevice(device);
     ctx.phase = "control";
+    ctx.session.phase = "control";
+    ctx.session.probingActive = false;
     ctx.setupStep = "done";
     return JSON.stringify({
       success: true,
@@ -562,7 +628,10 @@ async function execVerifyDevice(
     device.brandCode = null;
     device.protocol = null;
     await setDevice(device);
-    ctx.phase = "setup";
+    ctx.phase = "discovery";
+    ctx.session.phase = "discovery";
+    ctx.session.matchedBrand = null as any;
+    ctx.session.probingActive = false;
     ctx.setupStep = "probing";
     return JSON.stringify({
       success: false,
@@ -570,6 +639,50 @@ async function execVerifyDevice(
       message: "品牌识别可能有误。建议重新探测或换一种方式。",
     });
   }
+}
+
+async function execRegisterDevice(
+  args: any,
+  ctx: ToolContext
+): Promise<string> {
+  const name: string = args.name?.trim();
+  if (!name) {
+    return JSON.stringify({ error: "请提供设备名字。" });
+  }
+
+  // Find the unverified device with a matched brand (latest)
+  const devices = await getUserDevices(ctx.userId);
+  const pending = devices.filter((d) => !d.verified && d.brandCode);
+  if (pending.length === 0) {
+    return JSON.stringify({
+      error: "没有待注册的设备。请先完成品牌探测。",
+    });
+  }
+
+  const device = pending[0];
+
+  // Register: set name + mark verified
+  device.name = name;
+  device.verified = true;
+  await setDevice(device);
+
+  // Update session
+  ctx.phase = "control";
+  ctx.session.phase = "control";
+  ctx.session.alias = name;
+  ctx.session.probingActive = false;
+  ctx.deviceId = device.id;
+  ctx.setupStep = "done";
+
+  return JSON.stringify({
+    success: true,
+    device_id: device.id,
+    device_name: name,
+    room: device.room,
+    brand_code: device.brandCode,
+    status: "registered",
+    message: `设备 ${name} 已注册成功！用户现在可以控制它了（调到XX度、开关等）。`,
+  });
 }
 
 async function execControlAc(
@@ -641,6 +754,7 @@ async function execControlAc(
   // Set context for frontend
   ctx.irCommand = irCommand;
   ctx.phase = "control";
+  ctx.session.phase = "control";
   ctx.deviceId = device.id;
   ctx.setupStep = undefined;
 

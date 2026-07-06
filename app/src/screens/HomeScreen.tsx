@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Platform, Pressable, ScrollView,
+  KeyboardAvoidingView,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
@@ -251,6 +252,7 @@ export default function HomeScreen() {
   // === RENDER: Setup ===
   if (setupStep) {
     return (
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
         <Text style={styles.hdr}>Natrl Remote</Text>
         <View style={styles.setupCard}>
@@ -300,11 +302,13 @@ export default function HomeScreen() {
         {renderBar()}
         <View style={{ height: insets.bottom + 8 }} />
       </View>
+      </KeyboardAvoidingView>
     );
   }
 
   // === RENDER: Main ===
   return (
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
     <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
       <Text style={styles.hdr}>Natrl Remote</Text>
       {acDevice ? (
@@ -347,6 +351,7 @@ export default function HomeScreen() {
       {renderBar()}
       <View style={{ height: insets.bottom + 8 }} />
     </View>
+    </KeyboardAvoidingView>
   );
 
   function renderBar() {
