@@ -161,7 +161,7 @@ start_waveform() {
     fi
     log "Starting Waveform Engine..."
     cd "$WAVEFORM_DIR"
-    nohup uvicorn server:app --host 0.0.0.0 --port $WAVEFORM_PORT \
+    nohup env DATABASE_URL="mysql+pymysql://natrl:natrl_dev@127.0.0.1:3306/natrl" uvicorn server:app --host 0.0.0.0 --port $WAVEFORM_PORT \
         &>"$LOG_DIR/waveform.log" &
     echo $! > "$PID_DIR/waveform.pid"
 

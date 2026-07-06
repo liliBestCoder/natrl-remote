@@ -120,13 +120,15 @@ export async function generateWaveform(
         carrier_freq: result.carrier_freq,
         raw_timing: result.raw_timing,
       };
-    } catch (e) { /* fall through to mock */ }
+    } catch (e: any) {
+      console.error(`[ir-engine] ⚠️ waveform-engine /generate failed: ${e.message} → using mock`);
+    }
   }
 
-  // Mock
+  // Mock fallback
   const timing = mockEncode(brandCode, temperature, mode, fanSpeed, powerOn);
   const addr = brandAddr(brandCode);
-  console.log(`[ir-engine] generateWaveform: brand=${brandCode} (addr=0x${addr.toString(16).padStart(2,'0')}) temp=${temperature} mode=${mode} fan=${fanSpeed} power=${powerOn} | pulses=${timing.length} carrier=${CARRIER_38K}Hz | first_12=${JSON.stringify(timing.slice(0, 12))}`);
+  console.log(`[ir-engine] generateWaveform(mock): brand=${brandCode} addr=0x${addr.toString(16).padStart(2,'0')} temp=${temperature} mode=${mode} fan=${fanSpeed} power=${powerOn} | pulses=${timing.length} | first_12=${JSON.stringify(timing.slice(0,12))}`);
   return {
     brand_code: brandCode,
     protocol: "NEC (mock)",
@@ -149,7 +151,7 @@ export async function matchProtocol(
         brandCode: result.brand_code || null,
         confidence: result.confidence,
       };
-    } catch (e) { /* fall through */ }
+    } catch (e: any) { console.error(`[ir-engine] ⚠️ waveform-engine /match failed: ${e.message} → using mock`); }
   }
   // Mock: just return first known brand
   return { brandCode: "gree_nec_v1", confidence: 0.8 };
@@ -190,7 +192,9 @@ export async function getProbeCommands(
           raw_timing: p.raw_timing,
         }],
       }));
-    } catch (e) { /* fall through */ }
+    } catch (e: any) {
+      console.error(`[ir-engine] ⚠️ waveform-engine /probe failed: ${e.message} → using mock`);
+    }
   }
 
   // Top AC brands by market share (13 brands)

@@ -40,8 +40,8 @@ async function main() {
   app.use("/api/control", controlRouter);
   app.use("/api/devices", devicesRouter);
 
-  app.listen(config.port, () => {
-    console.log(`[server] natrl-backend listening on port ${config.port}`);
+  app.listen(config.port, "0.0.0.0", () => {
+    console.log(`[server] natrl-backend listening on 0.0.0.0:${config.port}`);
   });
 }
 
