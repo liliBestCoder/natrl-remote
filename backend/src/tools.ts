@@ -38,32 +38,38 @@ export interface ToolContext {
 
 const probeSessions = new Map<string, ProbeSession>();
 
-// Brand name → brand_code mapping for Chinese user input
+// Brand name → brand_code mapping (matches database ir_protocols.brand_code)
 const BRAND_ALIASES: Record<string, string[]> = {
-  gree:     ["gree_nec_v1"],
-  格力:     ["gree_nec_v1"],
-  midea:    ["midea_nec_v1"],
-  美的:     ["midea_nec_v1"],
-  haier:    ["haier_nec_v1"],
-  海尔:     ["haier_nec_v1"],
-  hisense:  ["hisense_nec_v1"],
-  海信:     ["hisense_nec_v1"],
-  aux:      ["aux_nec_v1"],
-  奥克斯:   ["aux_nec_v1"],
-  tcl:      ["tcl_nec_v1"],
-  长虹:     ["changhong_nec_v1"],
-  changhong:["changhong_nec_v1"],
-  chigo:    ["chigo_nec_v1"],
-  志高:     ["chigo_nec_v1"],
-  panasonic:["panasonic_nec_v1"],
-  松下:     ["panasonic_nec_v1"],
-  daikin:   ["daikin_nec_v1"],
-  大金:     ["daikin_nec_v1"],
-  whirlpool:["whirlpool_nec_v1"],
-  惠而浦:   ["whirlpool_nec_v1"],
-  samsung:  ["samsung_nec_v1"],
-  三星:     ["samsung_nec_v1"],
-  lg:       ["lg_nec_v1"],
+  gree:     ["gree"],
+  格力:     ["gree"],
+  midea:    ["midea"],
+  美的:     ["midea"],
+  haier:    ["haier"],
+  海尔:     ["haier"],
+  tcl:      ["tcl"],
+  kelon:    ["kelon"],
+  科龙:     ["kelon"],
+  panasonic:["panasonic"],
+  松下:     ["panasonic"],
+  coolix:   ["coolix"],
+  daikin:   ["daikin"],
+  大金:     ["daikin"],
+  mitsubishi:["mitsubishi"],
+  三菱:     ["mitsubishi"],
+  fujitsu:  ["fujitsu"],
+  富士通:   ["fujitsu"],
+  hitachi:  ["hitachi"],
+  日立:     ["hitachi"],
+  samsung:  ["samsung"],
+  三星:     ["samsung"],
+  carrier:  ["carrier"],
+  开利:     ["carrier"],
+  lg:       ["lg"],
+  toshiba:  ["toshiba"],
+  东芝:     ["toshiba"],
+  electra:  ["electra"],
+  whirlpool:["whirlpool"],
+  惠而浦:   ["whirlpool"],
 };
 
 // Look up brand codes matching a user hint (case-insensitive substring match)
@@ -447,31 +453,38 @@ async function execProbeBrand(
   };
   probeSessions.set(device.id, session);
 
-  // ── Pick FIRST brand, send ALL its commands ──
+  // ── Pick FIRST brand, generate MULTIPLE probe commands ──
   const firstBrand = orderedSets[0];
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
-  console.log(`[probe] ───── 第 1/${orderedSets.length} 个品牌: ${firstBrand.brand_code} ─────`);
-  console.log(`[probe] 发送 ${firstBrand.commands.length} 条探测命令:`);
+  // Generate multiple varied commands for this brand
+  const brandCode = firstBrand.brand_code;
+  const probeCombos: Array<{ temp: number; mode: string; fan: string; power: boolean; label: string }> = [
+    { temp: 26, mode: "cool", fan: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+    { temp: 24, mode: "cool", fan: "high",  power: true,  label: "开机+制冷24°C+强风" },
+    { temp: 26, mode: "heat", fan: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+    { temp: 18, mode: "cool", fan: "high",  power: true,  label: "开机+制冷18°C+强风" },
+    { temp: 26, mode: "cool", fan: "auto",  power: false, label: "关机" },
+  ];
 
-  for (let i = 0; i < firstBrand.commands.length; i++) {
-    const cmd = firstBrand.commands[i];
-    const combo = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
-    console.log(`[probe]   命令${i + 1}: ${combo} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+  console.log(`[probe] ───── 第 1/${orderedSets.length} 个品牌: ${brandCode} ─────`);
+  console.log(`[probe] 生成 ${probeCombos.length} 条探测命令:`);
 
-    // Publish via MQTT (no-op in mock mode)
-    const payload = Buffer.from(
-      JSON.stringify({
-        raw_timing: cmd.raw_timing,
-        carrier_freq: cmd.carrier_freq,
-      })
-    );
-    await publishCommand(device.mqttTopic, payload);
+  const commands: IRCommand[] = [];
+  for (let i = 0; i < probeCombos.length; i++) {
+    const combo = probeCombos[i];
+    const cmd = await generateWaveform(brandCode, combo.temp, combo.mode, combo.fan, combo.power);
+    commands.push(cmd);
+    console.log(`[probe]   命令${i + 1}: ${combo.label} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz | first_8=${JSON.stringify(cmd.raw_timing.slice(0, 8))}`);
+
+    await publishCommand(device.mqttTopic, Buffer.from(
+      JSON.stringify({ raw_timing: cmd.raw_timing, carrier_freq: cmd.carrier_freq })
+    ));
   }
 
   // Return all commands for this brand to frontend
-  ctx.irCommands = firstBrand.commands;
+  ctx.irCommands = commands;
   ctx.phase = "discovery";
   ctx.setupStep = "probing";
   ctx.deviceId = device.id;
@@ -617,46 +630,35 @@ async function execRespondProbe(
     });
   }
 
-  // ── Advance to next brand ──
+  // ── Advance to next brand, generate multi-commands ──
   const nextStep = session.steps[nextUnattempted];
   nextStep.attempted = true;
+  const brandCode = nextStep.brandCode;
 
-  // Get the original ProbeCommandSet for this brand (we stored commands in the session setup)
-  // Re-fetch commands for this specific brand
-  const allProbeSets = await getProbeCommands(26, "cool", "auto");
-  const nextSet = allProbeSets.find((s) => s.brand_code === nextStep.brandCode);
+  // Generate multiple varied commands for this brand
+  const probeCombos: Array<{ temp: number; mode: string; fan: string; power: boolean; label: string }> = [
+    { temp: 26, mode: "cool", fan: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+    { temp: 24, mode: "cool", fan: "high",  power: true,  label: "开机+制冷24°C+强风" },
+    { temp: 26, mode: "heat", fan: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+    { temp: 18, mode: "cool", fan: "high",  power: true,  label: "开机+制冷18°C+强风" },
+    { temp: 26, mode: "cool", fan: "auto",  power: false, label: "关机" },
+  ];
 
-  if (!nextSet) {
-    // Fallback: just use the single representative command
-    console.log(`[probe] ⚠️ 未找到 ${nextStep.brandCode} 的命令集，使用单条命令`);
-    const payload = Buffer.from(
-      JSON.stringify({
-        raw_timing: nextStep.irCommand.raw_timing,
-        carrier_freq: nextStep.irCommand.carrier_freq,
-      })
-    );
-    await publishCommand(device.mqttTopic, payload);
-    ctx.irCommands = [nextStep.irCommand];
-  } else {
-    // Send all commands for this brand
-    console.log(`[probe] ───── 第 ${nextUnattempted + 1}/${session.steps.length} 个品牌: ${nextSet.brand_code} ─────`);
-    console.log(`[probe] 发送 ${nextSet.commands.length} 条探测命令:`);
+  console.log(`[probe] ───── 第 ${nextUnattempted + 1}/${session.steps.length} 个品牌: ${brandCode} ─────`);
+  console.log(`[probe] 生成 ${probeCombos.length} 条探测命令:`);
 
-    for (let i = 0; i < nextSet.commands.length; i++) {
-      const cmd = nextSet.commands[i];
-      const combo = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
-      console.log(`[probe]   命令${i + 1}: ${combo} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+  const nextCommands: IRCommand[] = [];
+  for (let i = 0; i < probeCombos.length; i++) {
+    const combo = probeCombos[i];
+    const cmd = await generateWaveform(brandCode, combo.temp, combo.mode, combo.fan, combo.power);
+    nextCommands.push(cmd);
+    console.log(`[probe]   命令${i + 1}: ${combo.label} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz | first_8=${JSON.stringify(cmd.raw_timing.slice(0, 8))}`);
 
-      const payload = Buffer.from(
-        JSON.stringify({
-          raw_timing: cmd.raw_timing,
-          carrier_freq: cmd.carrier_freq,
-        })
-      );
-      await publishCommand(device.mqttTopic, payload);
-    }
-    ctx.irCommands = nextSet.commands;
+    await publishCommand(device.mqttTopic, Buffer.from(
+      JSON.stringify({ raw_timing: cmd.raw_timing, carrier_freq: cmd.carrier_freq })
+    ));
   }
+  ctx.irCommands = nextCommands;
 
   const attemptedCount = session.steps.filter((s) => s.attempted).length;
   const progressPct = Math.round((attemptedCount / session.steps.length) * 100);

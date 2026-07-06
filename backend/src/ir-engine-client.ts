@@ -197,21 +197,25 @@ export async function getProbeCommands(
     }
   }
 
-  // Top AC brands by market share (13 brands)
+  // Top AC brands by market share (same as database ir_protocols)
   const brands = [
-    "gree_nec_v1",       // 格力 — #1
-    "midea_nec_v1",      // 美的 — #2
-    "haier_nec_v1",      // 海尔 — #3
-    "hisense_nec_v1",    // 海信 — #4
-    "aux_nec_v1",        // 奥克斯 — #5
-    "tcl_nec_v1",        // TCL — #6
-    "changhong_nec_v1",  // 长虹 — #7
-    "chigo_nec_v1",      // 志高 — #8
-    "panasonic_nec_v1",  // 松下 — #9
-    "daikin_nec_v1",     // 大金 — #10
-    "whirlpool_nec_v1",  // 惠而浦 — #11
-    "samsung_nec_v1",    // 三星 — #12
-    "lg_nec_v1",         // LG — #13
+    "gree",       // 格力
+    "midea",      // 美的
+    "haier",      // 海尔
+    "tcl",        // TCL
+    "kelon",      // 科龙
+    "panasonic",  // 松下
+    "coolix",     // Coolix
+    "daikin",     // 大金
+    "mitsubishi", // 三菱
+    "fujitsu",    // 富士通
+    "hitachi",    // 日立
+    "samsung",    // 三星
+    "carrier",    // 开利
+    "lg",         // LG
+    "toshiba",    // 东芝
+    "electra",    // Electra
+    "whirlpool",  // 惠而浦
   ];
 
   console.log(`[ir-engine] getProbeCommands: building ${brands.length} brands × ${PROBE_COMBOS.length} commands each = ${brands.length * PROBE_COMBOS.length} total`);
