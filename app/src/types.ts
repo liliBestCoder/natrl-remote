@@ -1,5 +1,6 @@
 // Mirrors backend types — shared contract between app and API
 
+export type DeviceType = "ac" | "tv" | "fan" | "unknown";
 export type ACMode = "cool" | "heat" | "dry" | "fan_only" | "auto";
 export type FanSpeed = "low" | "medium" | "high" | "auto";
 
@@ -8,11 +9,13 @@ export interface IntentParams {
   mode?: ACMode;
   fan_speed?: FanSpeed;
   power?: boolean;
+  device_type?: DeviceType;
+  device_name?: string;
 }
 
 export interface Intent {
   intent: string;
-  device: "ac";
+  device: string;
   room: string | null;
   params: IntentParams;
 }
@@ -29,7 +32,7 @@ export interface Device {
   userId: string;
   room: string;
   name: string;
-  deviceType: "ac";
+  deviceType: string;
   brandCode: string | null;
   protocol: string | null;
   mqttTopic: string;
@@ -38,11 +41,25 @@ export interface Device {
   createdAt: string;
 }
 
+export interface IRCommand {
+  brand_code: string;
+  protocol: string;
+  carrier_freq: number;
+  raw_timing: number[];
+}
+
 export interface CommandResult {
   success: boolean;
+  phase: "discovery" | "setup" | "control";
   deviceId: string;
   intent: Intent;
+  irCommand?: IRCommand | null;
+  mqttPublished?: boolean;
   message: string;
+  setupStep?: "learning" | "probing" | "verifying" | "done";
+  probeBrand?: string;
+  probeStep?: number;
+  probeTotal?: number;
 }
 
 export interface LearnResult {

@@ -16,9 +16,15 @@
       }
     },
     "android": {
+      "jsEngine": "jsc",
       "adaptiveIcon": {
         "backgroundColor": "#1a1a2e"
-      }
-    }
+      },
+      "package": "com.anonymous.natrlremote"
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-font"
+    ]
   }
 }

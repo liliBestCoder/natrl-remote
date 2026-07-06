@@ -1,9 +1,22 @@
 import { CommandResult, Device, LearnResult, ProbeStatus } from "../types";
+import { Platform } from "react-native";
 
-const API_BASE = __DEV__
-  ? "http://192.168.1.100:3000"
-  : "https://api.natrl.example.com";
+// Auto-detect backend URL
+function getApiBase(): string {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    // HTTPS → use relative paths (proxied by dev server)
+    if (window.location.protocol === "https:") {
+      return "";
+    }
+    // HTTP on localhost → direct to backend
+    const host = window.location.hostname;
+    return `http://${host}:3000`;
+  }
+  // Native (Expo Go) — use dev machine IP
+  return "http://192.168.21.9:3000";
+}
 
+const API_BASE = getApiBase();
 const USER_ID = "user-mvp-001";
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
@@ -29,9 +42,7 @@ export async function control(input: string): Promise<CommandResult> {
 }
 
 export async function getDevices(): Promise<{ devices: Device[] }> {
-  return fetchApi<{ devices: Device[] }>(
-    `/api/devices?userId=${USER_ID}`
-  );
+  return fetchApi<{ devices: Device[] }>(`/api/devices?userId=${USER_ID}`);
 }
 
 export async function createDevice(
@@ -47,43 +58,31 @@ export async function createDevice(
 export async function learnDevice(
   deviceId: string
 ): Promise<{ status: string; message: string }> {
-  return fetchApi(`/api/devices/${deviceId}/learn`, {
-    method: "POST",
-  });
+  return fetchApi(`/api/devices/${deviceId}/learn`, { method: "POST" });
 }
 
 export async function learnResult(
   deviceId: string,
   rawTiming: number[]
 ): Promise<LearnResult> {
-  return fetchApi<LearnResult>(
-    `/api/devices/${deviceId}/learn/result`,
-    {
-      method: "POST",
-      body: JSON.stringify({ raw_timing: rawTiming }),
-    }
-  );
+  return fetchApi<LearnResult>(`/api/devices/${deviceId}/learn/result`, {
+    method: "POST",
+    body: JSON.stringify({ raw_timing: rawTiming }),
+  });
 }
 
-export async function probeDevice(
-  deviceId: string
-): Promise<ProbeStatus> {
-  return fetchApi<ProbeStatus>(`/api/devices/${deviceId}/probe`, {
-    method: "POST",
-  });
+export async function probeDevice(deviceId: string): Promise<ProbeStatus> {
+  return fetchApi<ProbeStatus>(`/api/devices/${deviceId}/probe`, { method: "POST" });
 }
 
 export async function probeRespond(
   deviceId: string,
   responded: boolean
 ): Promise<ProbeStatus> {
-  return fetchApi<ProbeStatus>(
-    `/api/devices/${deviceId}/probe/respond`,
-    {
-      method: "POST",
-      body: JSON.stringify({ responded }),
-    }
-  );
+  return fetchApi<ProbeStatus>(`/api/devices/${deviceId}/probe/respond`, {
+    method: "POST",
+    body: JSON.stringify({ responded }),
+  });
 }
 
 export async function verifyDevice(

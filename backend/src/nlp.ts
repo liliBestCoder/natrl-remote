@@ -1,23 +1,196 @@
-import { NLPResult } from "./types";
+/**
+ * NLP Module — DeepSeek Tool Call Loop
+ *
+ * Architecture:
+ *   大模型 = 大脑（决策调哪个 tool、传什么参数）
+ *   后端   = 手脚（执行 tool、返回结果给大模型）
+ *
+ * Flow:
+ *   user_input → DeepSeek(tools) → tool_call → execute → tool_result
+ *   → DeepSeek(tool_result) → tool_call or final_text → response
+ */
+
 import { config } from "./config";
+import { TOOL_DEFINITIONS, executeToolCall, ToolContext } from "./tools";
+import { IRCommand } from "./types";
 
-const SYSTEM_PROMPT = `You are a smart home intent parser. Extract the user's air conditioner command into structured JSON.
+// ─── System Prompt ──────────────────────────────────────────────────
 
-INTENT TYPES: set_temp, power_on, power_off, set_mode, set_fan_speed, query_state
-MODES: cool, heat, dry, fan_only, auto
-FAN SPEEDS: low, medium, high, auto
+const SYSTEM_PROMPT = `你是 Natrl，一个智能家居语音助手。你可以通过调用函数来控制用户的空调等红外设备。
 
-Rules:
-- "turn on" / "open" / "start" → power_on
-- "turn off" / "shut" / "close" / "stop" → power_off
-- "cooler" / "cold" / "lower" → set_temp (decrease temperature)
-- "warmer" / "hot" / "heat" → set_temp AND mode: heat
-- "XX degrees" / "set to XX" → set_temp with value
-- If the input is ambiguous (e.g., "make it cooler" without a target temperature), set confidence low and provide a clarification question.
-- room is null if not specified.
-- Output ONLY valid JSON, no explanation.`;
+## 核心原理
+你通过调用函数来工作。每个函数对应一个操作（注册设备、发送红外信号、查询状态等）。
+用户说中文，你理解意图，调用对应函数，然后根据函数返回结果生成友好的中文回复。
 
-export async function parseNaturalLanguage(input: string): Promise<NLPResult> {
+## 红外通信的重要限制
+红外是单向发射技术，只能发送指令，不能读取设备的真实状态。
+- 发送控制指令后，你只能说"已发送XX指令"，不能说"已设置为XX"
+- 查询状态时，返回的是"上次发送的指令值"，不是实时读数
+- 如果用户问"空调现在多少度"，回复时必须说明这是上次设置的温度值
+- 不确定指令是否生效时，可以建议用户观察空调反应
+
+## 设备发现与设置流程
+当用户提到拥有某个设备时：
+1. 调用 discover_device 注册设备
+2. 然后调用 probe_brand 开始品牌探测
+3. 告诉用户：正在通过手机发送红外探测信号，请观察空调
+
+品牌探测交互：
+- probe_brand 发送一个品牌的信号 → 用户反馈"有反应"/"没反应"
+- "有反应" → respond_probe(reacted:true) → 匹配成功 → verify_device(confirmed:true)
+- "没反应" → respond_probe(reacted:false) → 自动换下一个品牌 → 继续询问
+- "正常"/"可以"/"好了" → verify_device(confirmed:true) → 设备就绪
+- "不对"/"不行" → verify_device(confirmed:false) → 重新探测
+
+## 日常控制
+- "打开空调" → control_ac(power:true)
+- "关掉" → control_ac(power:false)
+- "调到26度" → control_ac(temperature:26)
+- "制冷模式" → control_ac(mode:"cool")
+- "风大一点" → control_ac(fan_speed:"high")
+- "太热了" → 先 get_device_state 查看当前设置 → 再 control_ac 调低温度
+- "现在多少度" → get_device_state（回复时说明是上次设置的值）
+
+## 回复风格
+- 简洁友好，中文
+- 设置操作后：说明发了什么指令
+- 状态查询后：说明这是上次设置的值
+- 探测过程中：告诉用户当前探测的品牌，请用户观察
+- 出错时：说明问题并给出建议
+
+## 规则
+- 一次可以调用多个不相互依赖的函数
+- 如果函数返回 error，根据 hint 引导用户
+- 不要编造信息，如实报告函数返回的结果`;
+
+// ─── Tool Call Loop ─────────────────────────────────────────────────
+
+export interface ProcessResult {
+  message: string;              // LLM's final text response
+  irCommand?: IRCommand;       // IR command for phone to emit (if any)
+  phase: "discovery" | "setup" | "control";
+  setupStep?: "probing" | "verifying" | "done";
+  deviceId?: string;
+  probeBrand?: string;
+  probeStep?: number;
+  probeTotal?: number;
+}
+
+export async function processInput(
+  userInput: string,
+  userId: string
+): Promise<ProcessResult> {
+  if (!config.deepseekApiKey) {
+    throw new Error("DEEPSEEK_API_KEY not configured");
+  }
+
+  const ctx: ToolContext = {
+    userId,
+    message: "",
+    phase: "control",
+    setupStep: undefined,
+    deviceId: undefined,
+  };
+
+  // System prompt + user input
+  const messages: any[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: userInput },
+  ];
+
+  // Loop: LLM may call tools, we execute, return results, LLM responds
+  const MAX_ITERATIONS = 5;
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const response = await callDeepSeek(messages);
+
+    const choice = response.choices[0];
+    const finishReason = choice.finish_reason;
+
+    if (finishReason === "stop") {
+      // LLM produced final text response
+      ctx.message = choice.message.content || "";
+      break;
+    }
+
+    if (finishReason === "tool_calls") {
+      const toolCalls = choice.message.tool_calls || [];
+
+      // Add assistant's tool call message to history
+      messages.push({
+        role: "assistant",
+        content: choice.message.content,
+        tool_calls: toolCalls,
+      });
+
+      // Execute each tool call
+      for (const tc of toolCalls) {
+        const fnName = tc.function.name;
+        let fnArgs: any = {};
+        try {
+          fnArgs = JSON.parse(tc.function.arguments);
+        } catch (_) {
+          fnArgs = {};
+        }
+
+        console.log(`[nlp] LLM → tool_call: ${fnName}(${JSON.stringify(fnArgs)})`);
+
+        const toolResult = await executeToolCall(fnName, fnArgs, ctx);
+
+        console.log(`[nlp] tool_result: ${toolResult.substring(0, 200)}`);
+
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: toolResult,
+        });
+      }
+
+      // Continue loop — LLM will process tool results
+      continue;
+    }
+
+    // Unexpected finish reason
+    console.warn(`[nlp] unexpected finish_reason: ${finishReason}`);
+    ctx.message = "抱歉，处理出错了，请再试一次。";
+    break;
+  }
+
+  // Build final result from context
+  const result: ProcessResult = {
+    message: ctx.message || "抱歉，我不太明白你的意思，换个说法试试？",
+    phase: ctx.phase,
+    deviceId: ctx.deviceId,
+  };
+
+  // Only include IR command if one was generated
+  if (ctx.irCommand) {
+    result.irCommand = ctx.irCommand;
+  }
+
+  // Setup-specific fields
+  if (ctx.phase === "setup") {
+    result.setupStep = ctx.setupStep;
+    result.probeBrand = ctx.probeBrand;
+    result.probeStep = ctx.probeStep;
+    result.probeTotal = ctx.probeTotal;
+  }
+
+  return result;
+}
+
+// ─── DeepSeek API Call ──────────────────────────────────────────────
+
+async function callDeepSeek(messages: any[]): Promise<any> {
+  const body: any = {
+    model: "deepseek-chat",
+    messages,
+    tools: TOOL_DEFINITIONS,
+    tool_choice: "auto",
+    temperature: 0.3,
+    max_tokens: 1024,
+  };
+
   const response = await fetch(
     `${config.deepseekBaseUrl}/v1/chat/completions`,
     {
@@ -26,97 +199,14 @@ export async function parseNaturalLanguage(input: string): Promise<NLPResult> {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.deepseekApiKey}`,
       },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: input },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "ac_intent",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                intent: {
-                  type: "string",
-                  enum: [
-                    "set_temp",
-                    "power_on",
-                    "power_off",
-                    "set_mode",
-                    "set_fan_speed",
-                    "query_state",
-                  ],
-                },
-                device: { type: "string", const: "ac" },
-                room: { type: ["string", "null"] },
-                confidence: { type: "number", minimum: 0, maximum: 1 },
-                needs_clarification: { type: ["string", "null"] },
-                params: {
-                  type: "object",
-                  properties: {
-                    temperature: {
-                      type: "integer",
-                      minimum: 16,
-                      maximum: 30,
-                    },
-                    mode: {
-                      type: "string",
-                      enum: ["cool", "heat", "dry", "fan_only", "auto"],
-                    },
-                    fan_speed: {
-                      type: "string",
-                      enum: ["low", "medium", "high", "auto"],
-                    },
-                    power: { type: "boolean" },
-                  },
-                  required: [],
-                  additionalProperties: false,
-                },
-              },
-              required: [
-                "intent",
-                "device",
-                "room",
-                "confidence",
-                "needs_clarification",
-                "params",
-              ],
-              additionalProperties: false,
-            },
-          },
-        },
-        max_tokens: 256,
-        temperature: 0.1,
-      }),
+      body: JSON.stringify(body),
     }
   );
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`DeepSeek API error ${response.status}: ${body}`);
+    const text = await response.text();
+    throw new Error(`DeepSeek API error ${response.status}: ${text}`);
   }
 
-  const data = (await response.json()) as any;
-  const raw = JSON.parse(data.choices[0].message.content) as NLPResult;
-
-  return {
-    parsed: {
-      intent: raw.parsed.intent,
-      device: "ac",
-      room: raw.parsed.room || null,
-      params: {
-        temperature: raw.parsed.params?.temperature,
-        mode: raw.parsed.params?.mode,
-        fan_speed: raw.parsed.params?.fan_speed,
-        power: raw.parsed.params?.power,
-      },
-    },
-    confidence: raw.confidence,
-    raw_input: input,
-    needs_clarification: raw.needs_clarification || null,
-  };
+  return response.json();
 }

@@ -1,7 +1,7 @@
 """Waveform Engine — FastAPI server.
 
-POST /generate  — build IR timing array from (brand_code, temp, mode, fan)
-POST /match     — match a raw IR capture to known protocol
+POST /generate  — lookup pre-computed IR timing from MySQL
+POST /match     — match a raw IR capture to known protocol  
 POST /probe     — generate probe frames for all known protocols
 GET  /health    — liveness check
 """
@@ -9,8 +9,8 @@ GET  /health    — liveness check
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from code_db import get_all_protocols, get_protocol, store_captured_signal
-from waveform import encode_ac_frame, estimate_tolerance
+from code_db import get_ir_code, get_all_protocols, get_protocol, get_brand_probe_codes, store_captured_signal
+from waveform import estimate_tolerance
 
 app = FastAPI(title="natrl-waveform-engine")
 
@@ -35,26 +35,32 @@ class ProbeRequest(BaseModel):
 
 @app.post("/generate")
 def generate(req: GenerateRequest):
-    protocol = get_protocol(req.brand_code)
-    if not protocol:
-        raise HTTPException(
-            status_code=404, detail=f"Unknown brand_code: {req.brand_code}"
-        )
-
-    raw_timing = encode_ac_frame(
-        req.brand_code,
-        req.temperature,
-        req.mode,
-        req.fan_speed,
-        protocol["encoding_params"],
+    """Look up pre-computed IR timing from DB (sourced from IRremoteESP8266)."""
+    code = get_ir_code(req.brand_code, req.temperature, req.mode, req.fan_speed)
+    
+    if code:
+        return {
+            "brand_code": code["brand_code"],
+            "protocol": "NEC",
+            "carrier_freq": code["carrier_freq"],
+            "raw_timing": code["raw_timing"],
+        }
+    
+    # Fallback: try nearest temperature
+    for offset in [1, -1, 2, -2]:
+        code = get_ir_code(req.brand_code, req.temperature + offset, req.mode, req.fan_speed)
+        if code:
+            return {
+                "brand_code": code["brand_code"],
+                "protocol": "NEC",
+                "carrier_freq": code["carrier_freq"],
+                "raw_timing": code["raw_timing"],
+                "warning": f"Exact temperature {req.temperature} not found, using {req.temperature + offset}"
+            }
+    
+    raise HTTPException(
+        status_code=404, detail=f"No IR code for {req.brand_code} t={req.temperature} {req.mode} {req.fan_speed}"
     )
-
-    return {
-        "brand_code": req.brand_code,
-        "protocol": protocol["protocol"],
-        "carrier_freq": protocol["carrier_freq"],
-        "raw_timing": raw_timing,
-    }
 
 
 @app.post("/match")
@@ -97,10 +103,8 @@ def match_signal(req: MatchRequest):
         confidence = min(1.0, best_score)
         if req.device_id:
             store_captured_signal(
-                req.device_id,
-                req.raw_timing,
-                best_match["brand_code"],
-                confidence,
+                req.device_id, req.raw_timing,
+                best_match["brand_code"], confidence,
             )
         return {
             "brand_code": best_match["brand_code"],
@@ -115,26 +119,22 @@ def match_signal(req: MatchRequest):
 
 @app.post("/probe")
 def probe(req: ProbeRequest):
-    """Generate probe frames for ALL known protocols (used by cloud probing flow)."""
-    protocols = get_all_protocols()
+    """Generate probe frames for all known protocols (one per brand)."""
+    codes = get_brand_probe_codes(req.temperature, req.mode, req.fan_speed)
+    
+    # Also get protocol metadata for brand names
+    protocols = {p["brand_code"]: p for p in get_all_protocols()}
+    
     results = []
-    for p in protocols:
-        raw_timing = encode_ac_frame(
-            p["brand_code"],
-            req.temperature,
-            req.mode,
-            req.fan_speed,
-            p["encoding_params"],
-        )
-        results.append(
-            {
-                "brand_code": p["brand_code"],
-                "brand_name": p["brand_name"],
-                "raw_timing": raw_timing,
-                "carrier_freq": p["carrier_freq"],
-            }
-        )
-    # Return in order (market share: top brands first)
+    for c in codes:
+        proto = protocols.get(c["brand_code"], {})
+        results.append({
+            "brand_code": c["brand_code"],
+            "brand_name": proto.get("brand_name", c["brand_code"]),
+            "raw_timing": c["raw_timing"],
+            "carrier_freq": c["carrier_freq"],
+        })
+    
     return {"probes": results}
 
 

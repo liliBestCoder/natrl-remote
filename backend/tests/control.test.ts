@@ -2,23 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import express, { Express } from "express";
 import request from "supertest";
 
-vi.mock("../src/nlp", () => ({ parseNaturalLanguage: vi.fn() }));
-vi.mock("../src/device-registry", () => ({
-  getUserDevices: vi.fn(),
-  getDevice: vi.fn(),
-  updateDeviceState: vi.fn(),
-}));
-vi.mock("../src/ir-engine-client", () => ({ generateWaveform: vi.fn() }));
-vi.mock("../src/mqtt-client", () => ({
-  publishCommand: vi.fn(),
-  connectMqtt: vi.fn(),
+// Mock NLP module
+vi.mock("../src/nlp", () => ({
+  processInput: vi.fn(),
 }));
 
 import { controlRouter } from "../src/routes/control";
-import { parseNaturalLanguage } from "../src/nlp";
-import { getUserDevices, updateDeviceState } from "../src/device-registry";
-import { generateWaveform } from "../src/ir-engine-client";
-import { publishCommand } from "../src/mqtt-client";
+import { processInput } from "../src/nlp";
 
 function makeApp(): Express {
   const app = express();
@@ -27,7 +17,7 @@ function makeApp(): Express {
   return app;
 }
 
-describe("POST /api/control", () => {
+describe("POST /api/control (Tool Call Architecture)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("should return 400 if input or userId missing", async () => {
@@ -36,60 +26,18 @@ describe("POST /api/control", () => {
     expect(res.status).toBe(400);
   });
 
-  it("should ask for clarification when confidence is low", async () => {
-    vi.mocked(parseNaturalLanguage).mockResolvedValue({
-      parsed: { intent: "set_temp", device: "ac", room: null, params: {} as any },
-      confidence: 0.3,
-      raw_input: "make it cooler",
-      needs_clarification: "Did you mean lower temperature?",
-    });
-
-    const app = makeApp();
-    const res = await request(app)
-      .post("/api/control")
-      .send({ input: "make it cooler", userId: "user-1" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(false);
-    expect(res.body.message).toContain("Did you mean");
-  });
-
-  it("should control AC successfully with valid intent", async () => {
-    vi.mocked(parseNaturalLanguage).mockResolvedValue({
-      parsed: {
-        intent: "set_temp",
-        device: "ac",
-        room: null,
-        params: { temperature: 26, mode: "cool" as any, fan_speed: "auto" as any },
+  it("should proxy result from processInput", async () => {
+    vi.mocked(processInput).mockResolvedValue({
+      message: "已帮你把空调温度调到26度",
+      phase: "control",
+      deviceId: "dev-1",
+      irCommand: {
+        brand_code: "gree_nec_v1",
+        protocol: "NEC",
+        carrier_freq: 38000,
+        raw_timing: [9000, 4500, 560, 1690],
       },
-      confidence: 0.95,
-      raw_input: "set to 26 degrees",
-      needs_clarification: null,
     });
-
-    vi.mocked(getUserDevices).mockResolvedValue([{
-      id: "dev-1",
-      userId: "user-1",
-      room: "bedroom",
-      name: "卧室空调",
-      deviceType: "ac",
-      brandCode: "gree_nec_v1",
-      protocol: "NEC",
-      mqttTopic: "home/bedroom/dev-1",
-      lastState: { power: false, temperature: 24, mode: "cool" as any, fan_speed: "auto" as any },
-      verified: true,
-      createdAt: new Date().toISOString(),
-    }]);
-
-    vi.mocked(generateWaveform).mockResolvedValue({
-      brand_code: "gree_nec_v1",
-      protocol: "NEC",
-      carrier_freq: 38000,
-      raw_timing: [9000, 4500, 560, 1690],
-    });
-
-    vi.mocked(publishCommand).mockResolvedValue(undefined);
-    vi.mocked(updateDeviceState).mockResolvedValue(undefined);
 
     const app = makeApp();
     const res = await request(app)
@@ -99,25 +47,51 @@ describe("POST /api/control", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.message).toContain("26");
-    expect(publishCommand).toHaveBeenCalledTimes(1);
-    expect(updateDeviceState).toHaveBeenCalledTimes(1);
+    expect(res.body.irCommand).toBeDefined();
+    expect(res.body.irCommand.carrier_freq).toBe(38000);
+    expect(processInput).toHaveBeenCalledWith("调到26度", "user-1");
   });
 
-  it("should fail when no AC device is set up", async () => {
-    vi.mocked(parseNaturalLanguage).mockResolvedValue({
-      parsed: { intent: "set_temp", device: "ac", room: null, params: { temperature: 26 } as any },
-      confidence: 0.95,
-      raw_input: "set to 26",
-      needs_clarification: null,
+  it("should return setup phase result with probe info", async () => {
+    vi.mocked(processInput).mockResolvedValue({
+      message: "已添加卧室空调。探测信号已发送（品牌: gree_nec_v1），请观察空调是否有反应。",
+      phase: "setup",
+      deviceId: "dev-2",
+      setupStep: "probing",
+      probeBrand: "gree_nec_v1",
+      probeStep: 1,
+      probeTotal: 5,
+      irCommand: {
+        brand_code: "gree_nec_v1",
+        protocol: "NEC",
+        carrier_freq: 38000,
+        raw_timing: [9000, 4500, 560, 1690],
+      },
     });
-    vi.mocked(getUserDevices).mockResolvedValue([]);
+
+    const app = makeApp();
+    const res = await request(app)
+      .post("/api/control")
+      .send({ input: "我卧室有个空调", userId: "user-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.phase).toBe("setup");
+    expect(res.body.setupStep).toBe("probing");
+    expect(res.body.probeBrand).toBe("gree_nec_v1");
+    expect(res.body.probeTotal).toBe(5);
+    expect(res.body.irCommand).toBeDefined();
+  });
+
+  it("should return 500 on NLP error", async () => {
+    vi.mocked(processInput).mockRejectedValue(new Error("DeepSeek API error"));
 
     const app = makeApp();
     const res = await request(app)
       .post("/api/control")
       .send({ input: "调到26度", userId: "user-1" });
 
-    expect(res.body.success).toBe(false);
-    expect(res.body.message).toContain("No AC devices");
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("DeepSeek");
   });
 });
