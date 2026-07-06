@@ -12,7 +12,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   getUserDevices, getDevice, setDevice, updateDeviceState, deleteDevice,
 } from "./device-registry";
-import { generateWaveform, getProbeCommands } from "./ir-engine-client";
+import { generateWaveform, getProbeCommands, ProbeCommandSet } from "./ir-engine-client";
 import { publishCommand } from "./mqtt-client";
 import { Device, DeviceState, IRCommand, ProbeSession } from "./types";
 import { config } from "./config";
@@ -24,7 +24,8 @@ export interface ToolContext {
   userId: string;
   session: SessionState;              // Live session state (read/write)
   message: string;
-  irCommand?: IRCommand;
+  irCommand?: IRCommand;              // single (for control_ac)
+  irCommands?: IRCommand[];           // multiple commands for one brand (probe)
   phase: "discovery" | "registration" | "control";
   setupStep?: "probing" | "verifying" | "done";
   deviceId?: string;
@@ -39,25 +40,30 @@ const probeSessions = new Map<string, ProbeSession>();
 
 // Brand name → brand_code mapping for Chinese user input
 const BRAND_ALIASES: Record<string, string[]> = {
-  gree:    ["gree_nec_v1"],
-  格力:    ["gree_nec_v1"],
-  midea:   ["midea_nec_v1"],
-  美的:    ["midea_nec_v1"],
-  haier:   ["haier_nec_v1"],
-  海尔:    ["haier_nec_v1"],
-  hisense: ["hisense_nec_v1"],
-  海信:    ["hisense_nec_v1"],
-  aux:     ["aux_nec_v1"],
-  奥克斯:  ["aux_nec_v1"],
-  tcl:     ["tcl_nec_v1"],
-  长虹:    ["changhong_nec_v1"],
+  gree:     ["gree_nec_v1"],
+  格力:     ["gree_nec_v1"],
+  midea:    ["midea_nec_v1"],
+  美的:     ["midea_nec_v1"],
+  haier:    ["haier_nec_v1"],
+  海尔:     ["haier_nec_v1"],
+  hisense:  ["hisense_nec_v1"],
+  海信:     ["hisense_nec_v1"],
+  aux:      ["aux_nec_v1"],
+  奥克斯:   ["aux_nec_v1"],
+  tcl:      ["tcl_nec_v1"],
+  长虹:     ["changhong_nec_v1"],
   changhong:["changhong_nec_v1"],
-  chigo:   ["chigo_nec_v1"],
-  志高:    ["chigo_nec_v1"],
+  chigo:    ["chigo_nec_v1"],
+  志高:     ["chigo_nec_v1"],
   panasonic:["panasonic_nec_v1"],
-  松下:    ["panasonic_nec_v1"],
-  daikin:  ["daikin_nec_v1"],
-  大金:    ["daikin_nec_v1"],
+  松下:     ["panasonic_nec_v1"],
+  daikin:   ["daikin_nec_v1"],
+  大金:     ["daikin_nec_v1"],
+  whirlpool:["whirlpool_nec_v1"],
+  惠而浦:   ["whirlpool_nec_v1"],
+  samsung:  ["samsung_nec_v1"],
+  三星:     ["samsung_nec_v1"],
+  lg:       ["lg_nec_v1"],
 };
 
 // Look up brand codes matching a user hint (case-insensitive substring match)
@@ -108,12 +114,13 @@ export const TOOL_DEFINITIONS = [
     function: {
       name: "probe_brand",
       description:
-        "云端红外品牌探测。发送一个品牌的 IR 信号，让用户观察空调是否有反应。" +
-        "每次调用尝试一个品牌，用户反馈'有反应'或'没反应'后决定下一步。" +
+        "云端红外品牌探测。对一个品牌发送多条不同参数的红外命令（开机制冷、制热、关机等），" +
+        "让用户观察空调是否有任何反应（蜂鸣、灯闪、开机等）。" +
+        "每次调用尝试一个品牌的多条命令，用户反馈'有反应'或'没反应'后决定下一步。" +
         "通常在 discover_device 之后自动调用。" +
-        "如果用户主动说了品牌（如'格力'），请将品牌名填入 brand_hint 参数，系统会优先尝试该品牌。" +
+        "如果用户主动说了品牌（如'格力'、'whirlpool'），请将品牌名填入 brand_hint 参数，系统会优先尝试该品牌。" +
         "如果用户不知道品牌，不要传 brand_hint，系统会按市场占有率从高到低自动探测。" +
-        "重要：在调用此函数之前，必须先主动询问用户'请问您知道空调的品牌吗？'",
+        "重要：调用此函数前必须先询问用户品牌。如果用户说了品牌，立即调用不要重复询问。",
       parameters: {
         type: "object",
         properties: {
@@ -123,7 +130,7 @@ export const TOOL_DEFINITIONS = [
           },
           brand_hint: {
             type: "string",
-            description: "用户提供的品牌名（中文或英文），如'格力'、'美的'、'gree'。不知道则不传。",
+            description: "用户提供的品牌名（中文或英文），如'格力'、'美的'、'gree'、'whirlpool'。不知道则不传。",
           },
         },
         required: [],
@@ -136,15 +143,16 @@ export const TOOL_DEFINITIONS = [
     function: {
       name: "respond_probe",
       description:
-        "处理用户对探测信号的反馈。用户说'有反应'→reacted=true，'没反应'→reacted=false。" +
-        "如果 reacted=true，品牌匹配成功，后续需要 verify_device 确认。" +
-        "如果 reacted=false，系统自动尝试下一个品牌。",
+        "处理用户对探测信号的反馈。每次探测对一个品牌发送多条红外命令。" +
+        "用户说'有反应'→reacted=true，品牌匹配成功，进入阶段2。" +
+        "用户说'没反应'→reacted=false，系统自动尝试下一个品牌。" +
+        "不要等待用户确认，探测中一直循环直到有反应或全部试完。",
       parameters: {
         type: "object",
         properties: {
           reacted: {
             type: "boolean",
-            description: "空调是否有反应",
+            description: "空调是否有反应（开机/蜂鸣/灯闪等）",
           },
         },
         required: ["reacted"],
@@ -386,7 +394,6 @@ async function execProbeBrand(
 ): Promise<string> {
   let deviceId = args.device_id;
   if (!deviceId) {
-    // Find latest unverified device
     const devices = await getUserDevices(ctx.userId);
     const unverified = devices.filter((d) => !d.verified);
     if (unverified.length === 0) {
@@ -402,79 +409,118 @@ async function execProbeBrand(
     return JSON.stringify({ error: `设备 ${deviceId} 不存在` });
   }
 
-  // Get probe commands (10 brands)
-  const allProbes = await getProbeCommands(26, "cool", "auto");
+  // ── Get ALL probe command sets (each brand has multiple commands) ──
+  const allProbeSets = await getProbeCommands(26, "cool", "auto");
+  console.log(`[probe] ========================================`);
+  console.log(`[probe] 🔍 开始品牌探测 — device=${deviceId}`);
+  console.log(`[probe] 品牌总数=${allProbeSets.length}, 每品牌命令数=${allProbeSets[0]?.commands.length || 0}`);
 
   // Reorder based on brand hint
-  let orderedProbes = allProbes;
+  let orderedSets = allProbeSets;
   const hint = args.brand_hint?.trim();
   if (hint) {
     ctx.session.brandHint = hint;
     const matchedCodes = matchBrandHint(hint);
+    console.log(`[probe] 用户提示品牌: "${hint}" → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
     if (matchedCodes.length > 0) {
-      // Move matched brands to the front
-      const matchedProbes = allProbes.filter((p) => matchedCodes.includes(p.brand_code));
-      const otherProbes = allProbes.filter((p) => !matchedCodes.includes(p.brand_code));
-      orderedProbes = [...matchedProbes, ...otherProbes];
-      console.log(`[probe] brand hint "${hint}" matched: ${matchedCodes.join(", ")}, reordered ${matchedProbes.length} to front`);
+      const matched = allProbeSets.filter((s) => matchedCodes.includes(s.brand_code));
+      const others = allProbeSets.filter((s) => !matchedCodes.includes(s.brand_code));
+      orderedSets = [...matched, ...others];
+      console.log(`[probe] 重排: ${orderedSets.map(s => s.brand_code).join(" → ")}`);
     }
   } else {
     ctx.session.brandHint = undefined;
+    console.log(`[probe] 无品牌提示，默认顺序探测`);
   }
 
-  // Start new probe session
+  // ── Build probe session (one step per brand) ──
   const session: ProbeSession = {
     deviceId: device.id,
-    steps: orderedProbes.map((cmd) => ({
-      brandCode: cmd.brand_code,
+    steps: orderedSets.map((set) => ({
+      brandCode: set.brand_code,
       attempted: false,
       userResponse: "pending",
-      irCommand: cmd,
+      irCommand: set.commands[0], // representative command
     })),
     matchedBrand: null,
     complete: false,
   };
   probeSessions.set(device.id, session);
 
-  // Send first probe
+  // ── Pick FIRST brand, send ALL its commands ──
+  const firstBrand = orderedSets[0];
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
-  // Also try MQTT (no-op in mock mode)
-  const payload = Buffer.from(
-    JSON.stringify({
-      raw_timing: firstStep.irCommand.raw_timing,
-      carrier_freq: firstStep.irCommand.carrier_freq,
-    })
-  );
-  await publishCommand(device.mqttTopic, payload);
+  console.log(`[probe] ───── 第 1/${orderedSets.length} 个品牌: ${firstBrand.brand_code} ─────`);
+  console.log(`[probe] 发送 ${firstBrand.commands.length} 条探测命令:`);
 
-  // Return IR command for phone emission
-  ctx.irCommand = firstStep.irCommand;
+  for (let i = 0; i < firstBrand.commands.length; i++) {
+    const cmd = firstBrand.commands[i];
+    const combo = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
+    console.log(`[probe]   命令${i + 1}: ${combo} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+
+    // Publish via MQTT (no-op in mock mode)
+    const payload = Buffer.from(
+      JSON.stringify({
+        raw_timing: cmd.raw_timing,
+        carrier_freq: cmd.carrier_freq,
+      })
+    );
+    await publishCommand(device.mqttTopic, payload);
+  }
+
+  // Return all commands for this brand to frontend
+  ctx.irCommands = firstBrand.commands;
   ctx.phase = "discovery";
   ctx.setupStep = "probing";
   ctx.deviceId = device.id;
-  ctx.probeBrand = firstStep.brandCode;
+  ctx.probeBrand = firstBrand.brand_code;
   ctx.probeStep = 1;
   ctx.probeTotal = session.steps.length;
 
-  // Update session state
+  // Update session
   ctx.session.phase = "discovery";
   ctx.session.probingActive = true;
   ctx.session.probeStep = 1;
   ctx.session.probeTotal = session.steps.length;
-  ctx.session.currentProbeBrand = firstStep.brandCode;
+  ctx.session.currentProbeBrand = firstBrand.brand_code;
   ctx.session.deviceId = device.id;
 
-  const hintMsg = hint ? `优先尝试用户提到的品牌: ${hint}。` : "";
+  // Build human-readable command list
+  const cmdDesc = firstBrand.commands.map((_, i) => {
+    const desc = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
+    return `  命令${i + 1}: ${desc}`;
+  }).join("\n");
+
+  const brandDisplay = getBrandDisplayName(firstBrand.brand_code);
+  const hintMsg = hint ? `\n🎯 优先尝试: "${hint}" → ${brandDisplay}` : "";
+
+  console.log(`[probe] ✅ 品牌 ${firstBrand.brand_code} 的 ${firstBrand.commands.length} 条命令已发送`);
 
   return JSON.stringify({
     success: true,
-    current_brand: firstStep.brandCode,
+    brand_code: firstBrand.brand_code,
+    brand_display: brandDisplay,
+    command_count: firstBrand.commands.length,
     step: 1,
     total: session.steps.length,
-    message: `${hintMsg}探测信号已发送（品牌: ${firstStep.brandCode}）。红外信号已通过手机发射。请观察空调是否有反应（开机/蜂鸣/灯闪），然后告诉用户询问'有反应吗？'。`,
+    message: `📡 正在探测品牌: **${brandDisplay}** (第 1/${orderedSets.length} 个)${hintMsg}\n\n发送了 ${firstBrand.commands.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察空调：\n• 听到"嘀"声或蜂鸣 → 说"有反应"\n• 指示灯闪烁 → 说"有反应"\n• 空调开机/出风 → 说"有反应"\n• 完全没动静 → 说"没反应"`,
   });
+}
+
+// Probe combo descriptions (matches PROBE_COMBOS in ir-engine-client.ts)
+const PROBE_COMBO_DESCS = [
+  "开机+制冷26°C+自动风",
+  "开机+制冷24°C+强风",
+  "开机+制热26°C+自动风",
+  "开机+制冷18°C+强风",
+  "关机",
+];
+
+function getBrandDisplayName(brandCode: string): string {
+  const entry = Object.entries(BRAND_ALIASES).find(([, codes]) => codes.includes(brandCode));
+  return entry ? `${entry[0]} (${brandCode})` : brandCode;
 }
 
 async function execRespondProbe(
@@ -504,18 +550,22 @@ async function execRespondProbe(
   }
 
   const session = probeSessions.get(deviceId)!;
-  const currentStep = session.steps.find(
+
+  // Find the current (attempted but pending) step
+  const currentStepIndex = session.steps.findIndex(
     (s) => s.attempted && s.userResponse === "pending"
   );
+  const currentStep = currentStepIndex >= 0 ? session.steps[currentStepIndex] : null;
+
   if (currentStep) {
     currentStep.userResponse = reacted ? "yes" : "no";
+    console.log(`[probe] 用户反馈: ${reacted ? "有反应 ✅" : "没反应 ❌"} → 品牌 ${currentStep.brandCode} → ${currentStep.userResponse}`);
   }
 
   ctx.deviceId = device.id;
-  ctx.phase = "discovery";
 
   if (reacted && currentStep) {
-    // Brand matched! Move to registration phase
+    // ── Brand matched! ──
     session.matchedBrand = currentStep.brandCode;
     session.complete = true;
     probeSessions.delete(device.id);
@@ -524,24 +574,32 @@ async function execRespondProbe(
     device.protocol = "NEC";
     await setDevice(device);
 
-    // Update session → registration phase
+    const attemptedCount = session.steps.filter((s) => s.attempted).length;
+    console.log(`[probe] ✅ 匹配成功! 品牌: ${currentStep.brandCode} (第 ${attemptedCount}/${session.steps.length} 个尝试)`);
+
     ctx.phase = "registration";
     ctx.session.phase = "registration";
     ctx.session.matchedBrand = currentStep.brandCode;
     ctx.session.probingActive = false;
     ctx.setupStep = undefined;
 
+    const brandName = getBrandDisplayName(currentStep.brandCode);
     return JSON.stringify({
       success: true,
       matched_brand: currentStep.brandCode,
+      matched_brand_display: brandName,
+      attempts: attemptedCount,
+      total: session.steps.length,
       status: "brand_identified",
-      message: "品牌匹配成功！请询问用户'想给它起个什么名字？'，等待用户提供名字后调用 register_device。",
+      message: `🎉 品牌匹配成功！已识别为 **${brandName}**（共尝试了 ${attemptedCount} 个品牌）。\n请询问用户'想给它起个什么名字？'，等用户提供名字后调用 register_device。`,
     });
   }
 
-  // Try next brand
-  const nextStep = session.steps.find((s) => !s.attempted);
-  if (!nextStep) {
+  // ── Not matched → try next brand ──
+  const nextUnattempted = session.steps.findIndex((s) => !s.attempted);
+
+  if (nextUnattempted < 0) {
+    // All brands exhausted
     session.complete = true;
     probeSessions.delete(device.id);
 
@@ -550,44 +608,90 @@ async function execRespondProbe(
     ctx.phase = "discovery";
     ctx.setupStep = undefined;
 
+    console.log(`[probe] ❌ 所有 ${session.steps.length} 个品牌已探测完毕，均未匹配`);
     return JSON.stringify({
       success: false,
       status: "exhausted",
-      message: "已尝试所有已知品牌，均未匹配。建议用户尝试用遥控器学习，或联系客服。",
+      total_attempted: session.steps.length,
+      message: `已尝试全部 ${session.steps.length} 个品牌，均未匹配。\n可能是红外发射问题（手机无红外硬件），或品牌不在库中。\n建议：检查手机是否支持红外，或用遥控器学习。`,
     });
   }
 
+  // ── Advance to next brand ──
+  const nextStep = session.steps[nextUnattempted];
   nextStep.attempted = true;
-  const payload = Buffer.from(
-    JSON.stringify({
-      raw_timing: nextStep.irCommand.raw_timing,
-      carrier_freq: nextStep.irCommand.carrier_freq,
-    })
-  );
-  await publishCommand(device.mqttTopic, payload);
+
+  // Get the original ProbeCommandSet for this brand (we stored commands in the session setup)
+  // Re-fetch commands for this specific brand
+  const allProbeSets = await getProbeCommands(26, "cool", "auto");
+  const nextSet = allProbeSets.find((s) => s.brand_code === nextStep.brandCode);
+
+  if (!nextSet) {
+    // Fallback: just use the single representative command
+    console.log(`[probe] ⚠️ 未找到 ${nextStep.brandCode} 的命令集，使用单条命令`);
+    const payload = Buffer.from(
+      JSON.stringify({
+        raw_timing: nextStep.irCommand.raw_timing,
+        carrier_freq: nextStep.irCommand.carrier_freq,
+      })
+    );
+    await publishCommand(device.mqttTopic, payload);
+    ctx.irCommands = [nextStep.irCommand];
+  } else {
+    // Send all commands for this brand
+    console.log(`[probe] ───── 第 ${nextUnattempted + 1}/${session.steps.length} 个品牌: ${nextSet.brand_code} ─────`);
+    console.log(`[probe] 发送 ${nextSet.commands.length} 条探测命令:`);
+
+    for (let i = 0; i < nextSet.commands.length; i++) {
+      const cmd = nextSet.commands[i];
+      const combo = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
+      console.log(`[probe]   命令${i + 1}: ${combo} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+
+      const payload = Buffer.from(
+        JSON.stringify({
+          raw_timing: cmd.raw_timing,
+          carrier_freq: cmd.carrier_freq,
+        })
+      );
+      await publishCommand(device.mqttTopic, payload);
+    }
+    ctx.irCommands = nextSet.commands;
+  }
 
   const attemptedCount = session.steps.filter((s) => s.attempted).length;
+  const progressPct = Math.round((attemptedCount / session.steps.length) * 100);
 
-  ctx.irCommand = nextStep.irCommand;
+  // Update context
   ctx.phase = "discovery";
   ctx.setupStep = "probing";
   ctx.probeBrand = nextStep.brandCode;
   ctx.probeStep = attemptedCount;
   ctx.probeTotal = session.steps.length;
 
-  // Update session state
+  // Update session
   ctx.session.probeStep = attemptedCount;
   ctx.session.probeTotal = session.steps.length;
   ctx.session.currentProbeBrand = nextStep.brandCode;
   ctx.session.probingActive = true;
   ctx.session.phase = "discovery";
 
+  const brandDisplay = getBrandDisplayName(nextStep.brandCode);
+  const cmdDesc = (ctx.irCommands || []).map((_, i) => {
+    const desc = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
+    return `  命令${i + 1}: ${desc}`;
+  }).join("\n");
+
+  console.log(`[probe] 📡 下一个品牌 ${nextStep.brandCode} 的 ${ctx.irCommands?.length || 0} 条命令已发送 (进度 ${attemptedCount}/${session.steps.length} = ${progressPct}%)`);
+
   return JSON.stringify({
     success: true,
-    current_brand: nextStep.brandCode,
+    brand_code: nextStep.brandCode,
+    brand_display: brandDisplay,
+    command_count: ctx.irCommands?.length || 0,
     step: attemptedCount,
     total: session.steps.length,
-    message: `下一个探测品牌: ${nextStep.brandCode}。红外信号已通过手机发射。询问用户是否有反应。`,
+    progress_pct: progressPct,
+    message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${ctx.irCommands?.length || 0} 条红外命令：\n${cmdDesc}\n\n观察空调反应后说"有反应"或"没反应"。`,
   });
 }
 
@@ -732,12 +836,14 @@ async function execControlAc(
   }
 
   // Generate IR waveform
+  console.log(`[control] 生成红外指令: brand=${device.brandCode} temp=${target.temperature} mode=${target.mode} fan=${target.fan_speed}`);
   const irCommand = await generateWaveform(
     device.brandCode,
     target.temperature,
     target.mode,
     target.fan_speed
   );
+  console.log(`[control] IR指令: ${irCommand.brand_code} | ${irCommand.raw_timing.length} pulses | ${irCommand.carrier_freq}Hz | protocol=${irCommand.protocol}`);
 
   // Publish via MQTT (no-op in mock mode)
   const payload = Buffer.from(

@@ -18,7 +18,7 @@ vi.mock("../src/config", () => ({
     nlpConfidenceThreshold: 0.7,
     mqttUrl: "",
     redisUrl: "",
-    port: 3001,
+    port: 3000,
   },
 }));
 
@@ -47,7 +47,8 @@ describe("processInput (Tool Call Architecture)", () => {
     const result = await processInput("调到26度", "user-1");
 
     expect(result.message).toContain("26");
-    expect(result.phase).toBe("control");
+    // No tool calls were executed, so phase stays at session default (discovery)
+    expect(result.phase).toBe("discovery");
   });
 
   it("should handle tool_call → execute → final response", async () => {

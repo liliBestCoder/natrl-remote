@@ -88,6 +88,37 @@ export async function emitIr(cmd: IRCommand): Promise<{ success: boolean; method
 }
 
 /**
+ * Emit multiple IR commands sequentially with a delay between each.
+ * Used for probing: one brand gets multiple commands to maximize hit chance.
+ *
+ * @returns array of results for each command
+ */
+export async function emitIrSequence(
+  cmds: IRCommand[],
+  delayMs: number = 2000
+): Promise<Array<{ index: number; brand: string; success: boolean; method: string }>> {
+  const results: Array<{ index: number; brand: string; success: boolean; method: string }> = [];
+
+  console.log(`[ir-emitter] 🔁 开始序列发射 ${cmds.length} 条命令, 间隔=${delayMs}ms`);
+
+  for (let i = 0; i < cmds.length; i++) {
+    const cmd = cmds[i];
+    console.log(`[ir-emitter]   发射 ${i + 1}/${cmds.length}: ${cmd.brand_code} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+
+    const result = await emitIr(cmd);
+    results.push({ index: i + 1, brand: cmd.brand_code, ...result });
+
+    // Delay between commands (skip delay after last)
+    if (i < cmds.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  console.log(`[ir-emitter] ✅ 序列发射完成: ${results.filter(r => r.success).length}/${cmds.length} 成功`);
+  return results;
+}
+
+/**
  * Build a human-readable description of the IR command for UI display.
  */
 export function describeIrCommand(cmd: IRCommand): string {

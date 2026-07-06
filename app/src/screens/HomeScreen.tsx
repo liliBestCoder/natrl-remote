@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
-import { emitIr, describeIrCommand, hasIrBlaster } from "../services/ir-emitter";
+import { emitIr, emitIrSequence, describeIrCommand, hasIrBlaster } from "../services/ir-emitter";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -221,8 +221,25 @@ export default function HomeScreen() {
         setSetupDeviceId(null);
       }
 
-      // Emit IR command via phone's IR blaster if present
-      if (result.irCommand) {
+      // Emit IR command(s) via phone's IR blaster
+      if (result.irCommands && result.irCommands.length > 0) {
+        // Multi-command probe: emit sequentially
+        const cmdCount = result.irCommands.length;
+        setIrStatus(`📡 正在发射 ${cmdCount} 条红外探测命令... (品牌: ${result.irCommands[0].brand_code})`);
+
+        // Emit sequence in background
+        emitIrSequence(result.irCommands, 2000).then((seqResults) => {
+          const successCount = seqResults.filter((r) => r.success).length;
+          if (successCount === cmdCount) {
+            setIrStatus(`📡 已发射 ${cmdCount} 条命令 (${result.irCommands![0].brand_code})`);
+          } else if (successCount > 0) {
+            setIrStatus(`⚠️ 仅发射 ${successCount}/${cmdCount} 条 (${result.irCommands![0].brand_code})`);
+          } else {
+            setIrStatus(`⚠️ 无红外硬件 — 无法发射命令 (${result.irCommands![0].brand_code})`);
+          }
+          setTimeout(() => setIrStatus(null), 8000);
+        });
+      } else if (result.irCommand) {
         const irResult = await emitIr(result.irCommand);
         if (irResult.success) {
           setIrStatus(`📡 红外已发射 (${describeIrCommand(result.irCommand)})`);

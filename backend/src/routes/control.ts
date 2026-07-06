@@ -30,6 +30,7 @@ controlRouter.post("/", async (req: Request, res: Response) => {
       deviceId: result.deviceId || "",
       message: result.message,
       irCommand: result.irCommand || null,
+      irCommands: result.irCommands || null,
       setupStep: result.setupStep,
       probeBrand: result.probeBrand,
       probeStep: result.probeStep,

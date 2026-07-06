@@ -54,6 +54,7 @@ export interface CommandResult {
   deviceId: string;
   intent: Intent;
   irCommand?: IRCommand | null;
+  irCommands?: IRCommand[] | null;
   mqttPublished?: boolean;
   message: string;
   setupStep?: "learning" | "probing" | "verifying" | "done";

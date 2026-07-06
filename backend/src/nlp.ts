@@ -24,14 +24,14 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能空调语音助手。通过红
 
 ### 阶段1 — 设备识别与品牌探测
 当用户提到有空调时：
-1. 识别设备和房间
+1. 识别设备和房间 → 调用 discover_device
 2. **必须先主动询问品牌**（如"请问是什么品牌的？格力、美的、海尔？"）
-3. 用户说了品牌 → 调用 probe_brand(brand_hint="品牌名")
-4. 用户说"不知道" → 调用 probe_brand() 不传 hint
-5. 探测中每次发送一个品牌信号，等用户反馈：
+3. 用户说了品牌（如"whirlpool"、"惠而浦"）→ 立即调用 probe_brand(brand_hint="品牌名")，不要重复询问
+4. 用户说"不知道" → 调用 probe_brand() 不传 hint，按市场占有率探测
+5. 探测时每次对一个品牌发送多条红外命令（开机制冷、制热、关机等），等用户反馈：
    - "有反应" → respond_probe(reacted:true) → 匹配成功 → 进入阶段2
-   - "没反应" → respond_probe(reacted:false) → 自动下一个品牌
-6. 10个品牌全失败 → 告诉用户探测失败
+   - "没反应" → respond_probe(reacted:false) → 自动下一品牌，不要问"要不要继续"
+6. 全部品牌失败 → 告诉用户探测失败
 
 ### 阶段2 — 设备注册
 品牌匹配成功后：
@@ -52,6 +52,7 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能空调语音助手。通过红
 - 阶段2没完成，绝不跳到阶段3
 - 探测中只做探测，不要问别名
 - 注册中只等别名，不要发控制指令
+- 用户说品牌后立即探测，不要再问"确定是这个品牌吗？"
 - 探测没反应时自动换下一个，不要问"要不要继续"
 - 一句话里既有品牌又有其他信息时，先处理品牌探测
 - 用户中途说无关的话，先完成当前阶段`;
@@ -59,7 +60,8 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能空调语音助手。通过红
 
 export interface ProcessResult {
   message: string;
-  irCommand?: IRCommand;
+  irCommand?: IRCommand;            // single (for control_ac)
+  irCommands?: IRCommand[];         // multiple commands for one brand (probe)
   phase: "discovery" | "registration" | "control";
   setupStep?: "probing" | "verifying" | "done";
   deviceId?: string;
@@ -176,6 +178,11 @@ export async function processInput(
 
   if (ctx.irCommand) {
     result.irCommand = ctx.irCommand;
+  }
+
+  if (ctx.irCommands && ctx.irCommands.length > 0) {
+    result.irCommands = ctx.irCommands;
+    console.log(`[nlp] 返回 ${ctx.irCommands.length} 条IR命令到前端: ${ctx.irCommands.map(c => c.brand_code).join(", ")}`);
   }
 
   if (ctx.phase === "discovery" || ctx.phase === "registration") {

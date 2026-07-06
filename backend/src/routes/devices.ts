@@ -138,15 +138,16 @@ devicesRouter.post("/:id/probe", async (req: Request, res: Response) => {
     return;
   }
 
-  const probeCommands = await getProbeCommands(26, "cool", "auto");
+  const probeCommandSets = await getProbeCommands(26, "cool", "auto");
 
+  // Use the first command from each brand set as the representative
   const session: ProbeSession = {
     deviceId: device.id,
-    steps: probeCommands.map((cmd) => ({
-      brandCode: cmd.brand_code,
+    steps: probeCommandSets.map((set) => ({
+      brandCode: set.brand_code,
       attempted: false,
       userResponse: "pending",
-      irCommand: cmd,
+      irCommand: set.commands[0],  // first command as representative
     })),
     matchedBrand: null,
     complete: false,
