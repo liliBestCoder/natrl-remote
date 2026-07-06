@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Platform, Pressable,
+  ActivityIndicator, Platform, Pressable, ScrollView,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
@@ -26,15 +26,16 @@ export default function HomeScreen() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [lastMsg, setLastMsg] = useState<string | null>(null);
+  const [messages, setMessages] = useState<{ role: "user" | "assistant"; text: string }[]>([]);
   const [_, setInitialLoad] = useState(true);
+  const chatRef = useRef<ScrollView>(null);
 
   // IR blaster
   const [irSupported, setIrSupported] = useState(false);
   const [irStatus, setIrStatus] = useState<string | null>(null);
 
   // Setup
-  const [setupStep, setSetupStep] = useState<"learning" | "probing" | "verifying" | null>(null);
+  const [setupStep, setSetupStep] = useState<"learning" | "probing" | "verifying" | "done" | null>(null);
   const [setupDeviceId, setSetupDeviceId] = useState<string | null>(null);
   const [probeBrand, setProbeBrand] = useState("");
   const [probeStep, setProbeStep] = useState(0);
@@ -80,6 +81,14 @@ export default function HomeScreen() {
     });
   }, []);
 
+  const addAssistantMsg = useCallback((text: string) => {
+    setMessages((prev) => [...prev, { role: "assistant", text }]);
+  }, []);
+
+  const addUserMsg = useCallback((text: string) => {
+    setMessages((prev) => [...prev, { role: "user", text }]);
+  }, []);
+
   const loadDevices = useCallback(async (isInitial = false) => {
     try {
       const result = await getDevices();
@@ -91,16 +100,16 @@ export default function HomeScreen() {
           setSetupDeviceId(unverified.id);
           if (unverified.brandCode) {
             setSetupStep("verifying");
-            setLastMsg("品牌已识别！请确认空调是否正常工作。");
+            addAssistantMsg("品牌已识别！请确认空调是否正常工作。");
           } else {
             setSetupStep("learning");
-            setLastMsg("把遥控器对准节点，按一下开机键...");
+            addAssistantMsg("把遥控器对准节点，按一下开机键...");
           }
         }
       }
     } catch (_e) {}
     setInitialLoad(false);
-  }, []);
+  }, [addAssistantMsg]);
 
   useEffect(() => { loadDevices(true); }, [loadDevices]);
 
@@ -109,7 +118,7 @@ export default function HomeScreen() {
     // Check browser support
     if (!voiceSupported) {
       setListening(false);
-      setLastMsg("当前浏览器不支持语音识别，请使用 Chrome 浏览器。");
+      addAssistantMsg("当前浏览器不支持语音识别，请使用 Chrome 浏览器。");
       return;
     }
 
@@ -124,11 +133,11 @@ export default function HomeScreen() {
       console.log("[voice] mic permission err:", permErr.name, permErr.message);
       if (permErr.name === "NotAllowedError" || permErr.name === "PermissionDeniedError") {
         setVoiceBlocked(true);
-        setLastMsg("麦克风权限已被阻止。请点击地址栏左侧锁图标 → 麦克风设为「允许」→ 刷新页面。");
+        addAssistantMsg("麦克风权限已被阻止。请点击地址栏左侧锁图标 → 麦克风设为「允许」→ 刷新页面。");
       } else if (permErr.name === "NotFoundError") {
-        setLastMsg("未检测到麦克风设备，请检查设备连接。");
+        addAssistantMsg("未检测到麦克风设备，请检查设备连接。");
       } else {
-        setLastMsg(`麦克风错误: ${permErr.message}`);
+        addAssistantMsg(`麦克风错误: ${permErr.message}`);
       }
       return;
     }
@@ -152,9 +161,9 @@ export default function HomeScreen() {
         setListening(false);
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
           setVoiceBlocked(true);
-          setLastMsg("语音服务被阻止。请点击地址栏锁图标 → 麦克风设为「允许」→ 刷新。");
+          addAssistantMsg("语音服务被阻止。请点击地址栏锁图标 → 麦克风设为「允许」→ 刷新。");
         } else if (e.error !== "aborted") {
-          setLastMsg(`语音错误: ${e.error}`);
+          addAssistantMsg(`语音错误: ${e.error}`);
         }
       };
       rec.onend = () => { setListening(false); };
@@ -164,9 +173,9 @@ export default function HomeScreen() {
     } catch (srErr: any) {
       setListening(false);
       console.log("[voice] sr start err:", srErr);
-      setLastMsg(`无法启动语音识别: ${srErr.message}`);
+      addAssistantMsg(`无法启动语音识别: ${srErr.message}`);
     }
-  }, [voiceSupported]);
+  }, [voiceSupported, addAssistantMsg]);
 
   const stopVoice = useCallback(() => {
     if (recognitionRef.current) {
@@ -193,12 +202,12 @@ export default function HomeScreen() {
     const text = (textOverride || input).trim();
     if (!text) return;
     setInput("");
-    setLastMsg(null);
+    addUserMsg(text);
     setLoading(true);
 
     try {
       const result: CommandResult = await control(text);
-      setLastMsg(result.message);
+      addAssistantMsg(result.message);
       if (result.phase === "setup") {
         setSetupStep(result.setupStep || null);
         if (result.deviceId) setSetupDeviceId(result.deviceId);
@@ -226,12 +235,12 @@ export default function HomeScreen() {
       await loadDevices();
     } catch (e: any) {
       if (e.message?.includes("fetch") || e.message?.includes("Network")) {
-        setLastMsg("后端服务未启动，请先启动后端。连接地址: " + (
+        addAssistantMsg("后端服务未启动，请先启动后端。连接地址: " + (
           Platform.OS === "web" && typeof window !== "undefined"
             ? `http://${window.location.hostname}:3000` : "http://192.168.21.9:3000"
         ));
       } else {
-        setLastMsg(e.message);
+        addAssistantMsg(e.message);
       }
     }
     setLoading(false);
@@ -249,7 +258,6 @@ export default function HomeScreen() {
             <>
               <ActivityIndicator size="large" color="#4fc3f7" />
               <Text style={styles.setupTitle}>正在学习红外信号</Text>
-              <Text style={styles.setupHint}>{lastMsg}</Text>
               <Text style={styles.setupHintSmall}>12秒无信号自动切换云端探测</Text>
               <TouchableOpacity style={styles.linkBtn} onPress={() => handleSend("直接探测")}>
                 <Text style={styles.linkBtnText}>跳过 →</Text>
@@ -261,7 +269,6 @@ export default function HomeScreen() {
               <Text style={styles.setupIcon}>🔍</Text>
               <Text style={styles.setupTitle}>云端自动探测</Text>
               {probeTotal > 0 && <Text style={styles.ptext}>第 {probeStep}/{probeTotal} 品牌</Text>}
-              <Text style={styles.setupHint}>{lastMsg}</Text>
               <Text style={styles.setupHintSmall}>说"有反应"或"没反应"</Text>
             </>
           )}
@@ -269,14 +276,27 @@ export default function HomeScreen() {
             <>
               <Text style={styles.setupIcon}>✅</Text>
               <Text style={styles.setupTitle}>最后验证</Text>
-              <Text style={styles.setupHint}>{lastMsg}</Text>
               <Text style={styles.setupHintSmall}>说"正常"或"不对"</Text>
             </>
           )}
         </View>
-        {lastMsg && <View style={styles.msg}><Text style={styles.msgT}>{lastMsg}</Text></View>}
+        {/* Chat history */}
+        <ScrollView
+          ref={chatRef}
+          style={styles.chatScroll}
+          contentContainerStyle={styles.chatContent}
+          onContentSizeChange={() => chatRef.current?.scrollToEnd({ animated: true })}
+        >
+          {messages.map((msg, i) => (
+            <View key={i} style={[styles.chatBubble, msg.role === "user" ? styles.chatUser : styles.chatAssistant]}>
+              <Text style={[styles.chatText, msg.role === "user" ? styles.chatTextUser : styles.chatTextAssistant]}>
+                {msg.text}
+              </Text>
+            </View>
+          ))}
+          {loading && <ActivityIndicator style={{ marginTop: 8 }} color="#58a6ff" />}
+        </ScrollView>
         {irStatus && <View style={styles.irMsg}><Text style={styles.irMsgT}>{irStatus}</Text></View>}
-        <View style={{ flex: 1 }} />
         {renderBar()}
         <View style={{ height: insets.bottom + 8 }} />
       </View>
@@ -307,9 +327,23 @@ export default function HomeScreen() {
           <Text style={styles.empHint}>直接说话就好{"\n"}按着下面说 "我卧室有个空调"</Text>
         </View>
       )}
-      {lastMsg && <View style={styles.msg}><Text style={styles.msgT}>{lastMsg}</Text></View>}
+      {/* Chat history */}
+      <ScrollView
+        ref={chatRef}
+        style={styles.chatScroll}
+        contentContainerStyle={styles.chatContent}
+        onContentSizeChange={() => chatRef.current?.scrollToEnd({ animated: true })}
+      >
+        {messages.map((msg, i) => (
+          <View key={i} style={[styles.chatBubble, msg.role === "user" ? styles.chatUser : styles.chatAssistant]}>
+            <Text style={[styles.chatText, msg.role === "user" ? styles.chatTextUser : styles.chatTextAssistant]}>
+              {msg.text}
+            </Text>
+          </View>
+        ))}
+        {loading && <ActivityIndicator style={{ marginTop: 8 }} color="#58a6ff" />}
+      </ScrollView>
       {irStatus && <View style={styles.irMsg}><Text style={styles.irMsgT}>{irStatus}</Text></View>}
-      <View style={{ flex: 1 }} />
       {renderBar()}
       <View style={{ height: insets.bottom + 8 }} />
     </View>
@@ -317,7 +351,7 @@ export default function HomeScreen() {
 
   function renderBar() {
     if (!textMode) {
-      // === VOICE MODE: whole bar is a hold-to-talk button ===
+      // === VOICE MODE: gray bar with centered "按住说话", mode switch above ===
       return (
         <View>
           {voiceBlocked && (
@@ -334,50 +368,52 @@ export default function HomeScreen() {
               </Text>
             </View>
           )}
-          <View style={styles.vBar}>
-            <Pressable
-              style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
-              onPressIn={handlePressIn}
-              onPressOut={handlePressOut}
-              delayLongPress={0}>
-              <Text style={styles.vIcon}>{listening ? "⏺" : voiceBlocked ? "🔇" : "🎙️"}</Text>
-              <Text style={styles.vText}>
-                {listening ? "正在聆听...松开发送"
-                  : voiceBlocked ? "已阻止（点我重试）"
-                  : "按住说话"}
-              </Text>
-            </Pressable>
-            <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(true)}>
-              <Text style={styles.modeSwitchIcon}>⌨</Text>
-            </TouchableOpacity>
-          </View>
+          {/* Mode switch ABOVE the bar */}
+          <TouchableOpacity style={styles.modeSwitchAbove} onPress={() => setTextMode(true)}>
+            <Text style={styles.modeSwitchIcon}>⌨</Text>
+          </TouchableOpacity>
+          {/* Voice bar: gray background, centered text */}
+          <Pressable
+            style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            delayLongPress={0}>
+            <Text style={styles.vIcon}>{listening ? "⏺" : voiceBlocked ? "🔇" : "🎙️"}</Text>
+            <Text style={styles.vText}>
+              {listening ? "正在聆听...松开发送"
+                : voiceBlocked ? "已阻止（点我重试）"
+                : "按住说话"}
+            </Text>
+          </Pressable>
         </View>
       );
     }
 
-    // === TEXT MODE: input + send ===
+    // === TEXT MODE: mode switch above, input bar below ===
     const ph = acDevice ? "输入指令..." : "比如：我卧室有个空调";
     return (
-      <View style={styles.tBar}>
-        <TextInput
-          style={styles.tInput}
-          value={input}
-          onChangeText={setInput}
-          placeholder={ph}
-          placeholderTextColor="#484f58"
-          returnKeyType="send"
-          onSubmitEditing={() => handleSend()}
-          editable={!loading}
-          autoFocus
-        />
-        <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(false)}>
+      <View>
+        <TouchableOpacity style={styles.modeSwitchAbove} onPress={() => setTextMode(false)}>
           <Text style={styles.modeSwitchIcon}>🎤</Text>
         </TouchableOpacity>
-        {input.trim().length > 0 && (
-          <TouchableOpacity style={styles.tSend} onPress={() => handleSend()} disabled={loading}>
-            {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.tSendT}>↑</Text>}
-          </TouchableOpacity>
-        )}
+        <View style={styles.tBar}>
+          <TextInput
+            style={styles.tInput}
+            value={input}
+            onChangeText={setInput}
+            placeholder={ph}
+            placeholderTextColor="#484f58"
+            returnKeyType="send"
+            onSubmitEditing={() => handleSend()}
+            editable={!loading}
+            autoFocus
+          />
+          {input.trim().length > 0 && (
+            <TouchableOpacity style={styles.tSend} onPress={() => handleSend()} disabled={loading}>
+              {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.tSendT}>↑</Text>}
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     );
   }
@@ -397,10 +433,9 @@ const styles = StyleSheet.create({
   hdr: { fontSize: 28, fontWeight: "800", color: "#e6edf3", marginBottom: 24 },
 
   // Setup
-  setupCard: { backgroundColor: "#161b22", borderRadius: 16, padding: 32, alignItems: "center", borderColor: "#30363d", borderWidth: 1, marginTop: 20 },
+  setupCard: { backgroundColor: "#161b22", borderRadius: 16, padding: 24, alignItems: "center", borderColor: "#30363d", borderWidth: 1, marginTop: 20 },
   setupIcon: { fontSize: 48, marginBottom: 12 },
   setupTitle: { fontSize: 20, fontWeight: "700", color: "#e6edf3", marginBottom: 12, textAlign: "center" },
-  setupHint: { fontSize: 15, color: "#8b949e", textAlign: "center", lineHeight: 22, marginBottom: 16 },
   setupHintSmall: { fontSize: 12, color: "#484f58", textAlign: "center", marginTop: 8 },
   ptext: { fontSize: 14, color: "#58a6ff", marginBottom: 8 },
 
@@ -418,26 +453,31 @@ const styles = StyleSheet.create({
   cRoom: { fontSize: 14, color: "#8b949e", marginTop: 2 },
   cRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 8 },
 
-  // Message
-  msg: { backgroundColor: "#1f6feb22", borderRadius: 12, padding: 14, marginTop: 16, borderColor: "#1f6feb44", borderWidth: 1 },
-  msgT: { color: "#e6edf3", fontSize: 15, textAlign: "center" },
+  // Chat history
+  chatScroll: { flex: 1, marginTop: 12 },
+  chatContent: { paddingBottom: 8 },
+  chatBubble: { maxWidth: "85%", borderRadius: 16, padding: 12, marginBottom: 8 },
+  chatUser: { alignSelf: "flex-end", backgroundColor: "#1f6feb33", borderColor: "#1f6feb44", borderWidth: 1 },
+  chatAssistant: { alignSelf: "flex-start", backgroundColor: "#21262d", borderColor: "#30363d", borderWidth: 1 },
+  chatText: { fontSize: 15, lineHeight: 21 },
+  chatTextUser: { color: "#e6edf3" },
+  chatTextAssistant: { color: "#c9d1d9" },
 
   // IR status
   irMsg: { backgroundColor: "#1a3a1a", borderRadius: 12, padding: 12, marginTop: 10, borderColor: "#2d5a2d", borderWidth: 1 },
   irMsgT: { color: "#7ec97e", fontSize: 13, textAlign: "center", lineHeight: 18 },
 
-  // Voice bar — whole bar is a button
-  voiceNotice: { backgroundColor: "#332b00", borderRadius: 10, padding: 10, marginBottom: 10, borderColor: "#665500", borderWidth: 1 },
+  // Voice bar
+  voiceNotice: { backgroundColor: "#332b00", borderRadius: 10, padding: 10, marginBottom: 6, borderColor: "#665500", borderWidth: 1 },
   voiceNoticeText: { color: "#ffa726", fontSize: 13, textAlign: "center", lineHeight: 18 },
-  vBar: { flexDirection: "row", alignItems: "center" },
   vBtn: {
-    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
-    backgroundColor: "#1f6feb", borderRadius: 28, paddingVertical: 16,
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    backgroundColor: "#30363d", borderRadius: 28, paddingVertical: 16,
   },
   vBtnActive: { backgroundColor: "#f44336" },
-  vBtnBlocked: { backgroundColor: "#555", opacity: 0.8 },
+  vBtnBlocked: { backgroundColor: "#484f58", opacity: 0.8 },
   vIcon: { fontSize: 22, marginRight: 8 },
-  vText: { color: "#fff", fontSize: 17, fontWeight: "600" },
+  vText: { color: "#e6edf3", fontSize: 17, fontWeight: "600" },
 
   // Text bar
   tBar: {
@@ -449,9 +489,9 @@ const styles = StyleSheet.create({
   tSend: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#238636", justifyContent: "center", alignItems: "center", marginLeft: 4 },
   tSendT: { color: "#fff", fontSize: 20, fontWeight: "700" },
 
-  // Mode switch
-  modeSwitch: { width: 42, height: 42, borderRadius: 21, justifyContent: "center", alignItems: "center", marginLeft: 10, backgroundColor: "#30363d" },
-  modeSwitchIcon: { fontSize: 20 },
+  // Mode switch — positioned above the bar
+  modeSwitchAbove: { alignSelf: "flex-end", width: 36, height: 36, borderRadius: 18, justifyContent: "center", alignItems: "center", marginBottom: 6, backgroundColor: "#30363d" },
+  modeSwitchIcon: { fontSize: 18 },
 
   // Misc
   linkBtn: { marginTop: 16, alignItems: "center", paddingVertical: 8 },

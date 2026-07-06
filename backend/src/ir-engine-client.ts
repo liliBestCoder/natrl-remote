@@ -147,13 +147,20 @@ export async function getProbeCommands(
     } catch (e) { /* fall through */ }
   }
 
-  // Mock: top 5 Chinese AC brands
+  // Mock: top 10 Chinese AC brands by market share
+  // Tier 1: top 5 (~70% market)
+  // Tier 2: next 5 (~20% market)
   const brands = [
-    "gree_nec_v1",
-    "midea_nec_v1",
-    "haier_nec_v1",
-    "aux_nec_v1",
-    "hisense_nec_v1",
+    "gree_nec_v1",       // 格力
+    "midea_nec_v1",      // 美的
+    "haier_nec_v1",      // 海尔
+    "hisense_nec_v1",    // 海信
+    "aux_nec_v1",        // 奥克斯
+    "tcl_nec_v1",        // TCL
+    "changhong_nec_v1",  // 长虹
+    "chigo_nec_v1",      // 志高
+    "panasonic_nec_v1",  // 松下
+    "daikin_nec_v1",     // 大金
   ];
   return brands.map((b) => ({
     brand_code: b,

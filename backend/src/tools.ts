@@ -35,6 +35,41 @@ export interface ToolContext {
 
 const probeSessions = new Map<string, ProbeSession>();
 
+// Brand name → brand_code mapping for Chinese user input
+const BRAND_ALIASES: Record<string, string[]> = {
+  gree:    ["gree_nec_v1"],
+  格力:    ["gree_nec_v1"],
+  midea:   ["midea_nec_v1"],
+  美的:    ["midea_nec_v1"],
+  haier:   ["haier_nec_v1"],
+  海尔:    ["haier_nec_v1"],
+  hisense: ["hisense_nec_v1"],
+  海信:    ["hisense_nec_v1"],
+  aux:     ["aux_nec_v1"],
+  奥克斯:  ["aux_nec_v1"],
+  tcl:     ["tcl_nec_v1"],
+  长虹:    ["changhong_nec_v1"],
+  changhong:["changhong_nec_v1"],
+  chigo:   ["chigo_nec_v1"],
+  志高:    ["chigo_nec_v1"],
+  panasonic:["panasonic_nec_v1"],
+  松下:    ["panasonic_nec_v1"],
+  daikin:  ["daikin_nec_v1"],
+  大金:    ["daikin_nec_v1"],
+};
+
+// Look up brand codes matching a user hint (case-insensitive substring match)
+function matchBrandHint(hint: string): string[] {
+  const lower = hint.toLowerCase().trim();
+  const matched: string[] = [];
+  for (const [key, codes] of Object.entries(BRAND_ALIASES)) {
+    if (key.toLowerCase().includes(lower) || lower.includes(key.toLowerCase())) {
+      matched.push(...codes);
+    }
+  }
+  return [...new Set(matched)]; // deduplicate
+}
+
 // ─── Tool Definitions (DeepSeek format) ──────────────────────────────
 
 export const TOOL_DEFINITIONS = [
@@ -73,13 +108,20 @@ export const TOOL_DEFINITIONS = [
       description:
         "云端红外品牌探测。发送一个品牌的 IR 信号，让用户观察空调是否有反应。" +
         "每次调用尝试一个品牌，用户反馈'有反应'或'没反应'后决定下一步。" +
-        "通常在 discover_device 之后自动调用。",
+        "通常在 discover_device 之后自动调用。" +
+        "如果用户主动说了品牌（如'格力'），请将品牌名填入 brand_hint 参数，系统会优先尝试该品牌。" +
+        "如果用户不知道品牌，不要传 brand_hint，系统会按市场占有率从高到低自动探测。" +
+        "重要：在调用此函数之前，必须先主动询问用户'请问您知道空调的品牌吗？'",
       parameters: {
         type: "object",
         properties: {
           device_id: {
             type: "string",
             description: "设备ID。不传则使用最新未验证的设备。",
+          },
+          brand_hint: {
+            type: "string",
+            description: "用户提供的品牌名（中文或英文），如'格力'、'美的'、'gree'。不知道则不传。",
           },
         },
         required: [],
@@ -327,11 +369,27 @@ async function execProbeBrand(
     return JSON.stringify({ error: `设备 ${deviceId} 不存在` });
   }
 
+  // Get probe commands (10 brands)
+  const allProbes = await getProbeCommands(26, "cool", "auto");
+
+  // Reorder based on brand hint
+  let orderedProbes = allProbes;
+  const hint = args.brand_hint?.trim();
+  if (hint) {
+    const matchedCodes = matchBrandHint(hint);
+    if (matchedCodes.length > 0) {
+      // Move matched brands to the front
+      const matchedProbes = allProbes.filter((p) => matchedCodes.includes(p.brand_code));
+      const otherProbes = allProbes.filter((p) => !matchedCodes.includes(p.brand_code));
+      orderedProbes = [...matchedProbes, ...otherProbes];
+      console.log(`[probe] brand hint "${hint}" matched: ${matchedCodes.join(", ")}, reordered ${matchedProbes.length} to front`);
+    }
+  }
+
   // Start new probe session
-  const probeCommands = await getProbeCommands(26, "cool", "auto");
   const session: ProbeSession = {
     deviceId: device.id,
-    steps: probeCommands.map((cmd) => ({
+    steps: orderedProbes.map((cmd) => ({
       brandCode: cmd.brand_code,
       attempted: false,
       userResponse: "pending",
@@ -364,12 +422,14 @@ async function execProbeBrand(
   ctx.probeStep = 1;
   ctx.probeTotal = session.steps.length;
 
+  const hintMsg = hint ? `优先尝试用户提到的品牌: ${hint}。` : "";
+
   return JSON.stringify({
     success: true,
     current_brand: firstStep.brandCode,
     step: 1,
     total: session.steps.length,
-    message: `探测信号已发送（品牌: ${firstStep.brandCode}）。红外信号已通过手机发射。请观察空调是否有反应（开机/蜂鸣/灯闪），然后告诉用户询问'有反应吗？'。`,
+    message: `${hintMsg}探测信号已发送（品牌: ${firstStep.brandCode}）。红外信号已通过手机发射。请观察空调是否有反应（开机/蜂鸣/灯闪），然后告诉用户询问'有反应吗？'。`,
   });
 }
 
