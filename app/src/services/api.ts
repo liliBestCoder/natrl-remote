@@ -7,11 +7,12 @@ const BACKEND_PORT = 3000;
 
 function getApiBase(): string {
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    // HTTPS → use relative paths (proxied by dev server)
-    if (window.location.protocol === "https:") {
-      return "";
-    }
+    // Web: always use relative paths — the web server (serve-https.js, nginx,
+    // or Expo proxy) must forward /api/* to the backend.
+    // This avoids cross-origin (CORS) and mixed-content (HTTPS→HTTP) issues.
+    return "";
   }
+  // Native app (Expo Go / APK): connect directly to backend on LAN
   return `http://${BACKEND_HOST}:${BACKEND_PORT}`;
 }
 

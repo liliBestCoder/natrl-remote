@@ -19,6 +19,18 @@ async function main() {
   const app = express();
   app.use(express.json());
 
+  // CORS — allow web frontend from any origin (dev/phone browser)
+  app.use((_req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (_req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   // Health check
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", service: "natrl-backend" });
