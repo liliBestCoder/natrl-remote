@@ -18,7 +18,7 @@ vi.mock("../src/config", () => ({
     nlpConfidenceThreshold: 0.7,
     mqttUrl: "",
     redisUrl: "",
-    port: 3000,
+    port: 3001,
   },
 }));
 

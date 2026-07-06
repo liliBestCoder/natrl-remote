@@ -1,5 +1,5 @@
 export const config = {
-  port: parseInt(process.env.PORT || "3000", 10),
+  port: parseInt(process.env.PORT || "3001", 10),
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || "sk-4fcc3fdf9de44fd59845fa9ec4f399d1",
   deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
   mqttUrl: process.env.MQTT_URL || "mqtt://localhost:1883",

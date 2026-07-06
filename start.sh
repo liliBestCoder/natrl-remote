@@ -12,7 +12,7 @@ WAVEFORM_DIR="$PROJECT_DIR/waveform-engine"
 # ─── Config ────────────────────────────────────────────────
 MYSQL_DATADIR="${MYSQL_DATADIR:-/var/lib/mysql}"
 REDIS_PORT=6379
-BACKEND_PORT=3000
+BACKEND_PORT=3001
 WAVEFORM_PORT=8001
 
 # Colors
@@ -85,7 +85,7 @@ do_status() {
     check_proc "backend"  "$PID_DIR/backend.pid"
     echo ""
     echo -e "  ${CYAN}Endpoints:${NC}"
-    check_api "backend"  "http://localhost:3000/health"
+    check_api "backend"  "http://localhost:3001/health"
     check_api "waveform" "http://localhost:8001/health"
     if mysqladmin ping -u root --silent 2>/dev/null; then
         echo -e "  ${GREEN}●${NC} mysql — localhost:3306"
@@ -274,7 +274,7 @@ case "$CMD" in
         echo -e "${GREEN}══════════════════════════════════════════${NC}"
         echo -e "${GREEN}  All services started!${NC}"
         echo ""
-        echo -e "  Backend:     ${CYAN}http://localhost:3000/health${NC}"
+        echo -e "  Backend:     ${CYAN}http://localhost:3001/health${NC}"
         echo -e "  Waveform:    ${CYAN}http://localhost:8001/health${NC}"
         echo -e "  MySQL:       ${CYAN}localhost:3306 (natrl/natrl_dev)${NC}"
         echo -e "  Redis:       ${CYAN}localhost:6379${NC}"

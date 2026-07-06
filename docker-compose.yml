@@ -47,9 +47,9 @@ services:
   backend:
     build: ./backend
     ports:
-      - "3000:3000"
+      - "3000:3001"
     environment:
-      PORT: "3000"
+      PORT: "3001"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
       MQTT_URL: mqtt://mosquitto:1883
       REDIS_URL: redis://redis:6379

@@ -1,19 +1,18 @@
 import { CommandResult, Device, LearnResult, ProbeStatus } from "../types";
 import { Platform } from "react-native";
 
-// Auto-detect backend URL
+// Backend address — dev machine IP on LAN
+const BACKEND_HOST = "192.168.21.9";
+const BACKEND_PORT = 3000;
+
 function getApiBase(): string {
   if (Platform.OS === "web" && typeof window !== "undefined") {
     // HTTPS → use relative paths (proxied by dev server)
     if (window.location.protocol === "https:") {
       return "";
     }
-    // HTTP on localhost → direct to backend
-    const host = window.location.hostname;
-    return `http://${host}:3000`;
   }
-  // Native (Expo Go) — use dev machine IP
-  return "http://192.168.21.9:3000";
+  return `http://${BACKEND_HOST}:${BACKEND_PORT}`;
 }
 
 const API_BASE = getApiBase();
