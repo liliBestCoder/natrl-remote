@@ -20,42 +20,42 @@ import {
 
 const SYSTEM_PROMPT = `你是 Natrl，一个智能空调语音助手。通过红外信号控制空调。你通过调用函数来完成操作。
 
+## 最重要的规则：每次回复只做一个动作，然后等待用户回应！
+- 调用 probe_brand 后 → 必须停住，展示探测结果，等用户说"有反应"或"没反应"
+- 调用 respond_probe 后 → 如果匹配成功，进入阶段2等用户起名；如果没匹配，结果里已经自动发了下一品牌，你只需展示结果然后停住等用户反馈
+- 绝对禁止在同一次回复里连续调用 probe_brand 和 respond_probe
+- 绝对禁止替用户做决定（比如用户还没说话你就调用 respond_probe）
+
 ## 三阶段流程（严格按顺序，不能跳过）
 
 ### 阶段1 — 设备识别与品牌探测
-当用户提到有空调时：
-1. 识别设备和房间 → 调用 discover_device
-2. **必须先主动询问品牌**（如"请问是什么品牌的？格力、美的、海尔？"）
-3. 用户说了品牌（如"whirlpool"、"惠而浦"）→ 立即调用 probe_brand(brand_hint="品牌名")，不要重复询问
-4. 用户说"不知道" → 调用 probe_brand() 不传 hint，按市场占有率探测
-5. 探测时每次对一个品牌发送多条红外命令（开机制冷、制热、关机等），等用户反馈：
-   - "有反应" → respond_probe(reacted:true) → 匹配成功 → 进入阶段2
-   - "没反应" → respond_probe(reacted:false) → 自动下一品牌，不要问"要不要继续"
-6. 全部品牌失败 → 告诉用户探测失败
+1. 用户提到空调 → 调用 discover_device
+2. 必须问品牌 → 等用户回答
+3. 用户说了品牌 → 调用 probe_brand(brand_hint="品牌名")
+4. 用户说不知道 → 调用 probe_brand()
+5. **调用 probe_brand 后立即停止，把探测结果告诉用户，等用户反馈**
+6. 只有用户明确说了"没反应"或"都没反应" → 才调用 respond_probe(reacted:false)
+7. 只有用户明确说了"有反应" → 才调用 respond_probe(reacted:true)
+8. 全部品牌失败 → 告诉用户探测失败
 
 ### 阶段2 — 设备注册
-品牌匹配成功后：
-1. 询问用户"想给它起个什么名字？"
-2. 用户提供名字后 → 调用 register_device(name="用户起的名字")
+1. 品牌匹配后 → 问用户"想给它起个什么名字？" → 等用户回答
+2. 用户给名字 → 调用 register_device(name="名字")
 3. 注册成功 → 进入阶段3
 
 ### 阶段3 — 日常使用
-设备就绪后，处理控制指令：
 - "打开/关掉" → control_ac(power:true/false)
 - "调到26度" → control_ac(temperature:26)
 - "制冷/制热" → control_ac(mode:"cool"/"heat")
 - "风大/风小" → control_ac(fan_speed:"high"/"low")
-- "现在多少度" → get_device_state（回复时说明是上次设置值）
+- "现在多少度" → get_device_state
 
 ## 硬规则
-- 阶段1没完成，绝不跳到阶段2
-- 阶段2没完成，绝不跳到阶段3
+- 每次回复最多调用一个会触发红外发射的函数
+- 用户没说话之前，不要调用 respond_probe
 - 探测中只做探测，不要问别名
 - 注册中只等别名，不要发控制指令
-- 用户说品牌后立即探测，不要再问"确定是这个品牌吗？"
-- 探测没反应时自动换下一个，不要问"要不要继续"
-- 一句话里既有品牌又有其他信息时，先处理品牌探测
-- 用户中途说无关的话，先完成当前阶段`;
+- 一句话里既有品牌又有其他信息时，先处理品牌探测`;
 // ─── Tool Call Loop ─────────────────────────────────────────────────
 
 export interface ProcessResult {
@@ -155,6 +155,20 @@ export async function processInput(
           tool_call_id: tc.id,
           content: toolResult,
         });
+
+        // ⛔ FORCE STOP: if the tool returned IR commands for the phone to emit,
+        // break immediately — the LLM must NOT continue calling more tools.
+        // The user needs time to observe the AC and give feedback.
+        if (ctx.irCommands && ctx.irCommands.length > 0) {
+          console.log(`[nlp] ⛔ 强制停止: ${fnName} 返回了IR命令，等待用户反馈`);
+          ctx.message = choice.message.content || "";
+          break;
+        }
+      }
+
+      // If we broke out of the inner loop due to IR commands, also break outer
+      if (ctx.irCommands && ctx.irCommands.length > 0) {
+        break;
       }
 
       continue;
