@@ -95,7 +95,8 @@ export async function emitIr(cmd: IRCommand): Promise<{ success: boolean; method
  */
 export async function emitIrSequence(
   cmds: IRCommand[],
-  delayMs: number = 2000
+  delayMs: number = 2000,
+  onProgress?: (index: number, total: number, cmd: IRCommand, success: boolean) => void
 ): Promise<Array<{ index: number; brand: string; success: boolean; method: string }>> {
   const results: Array<{ index: number; brand: string; success: boolean; method: string }> = [];
 
@@ -103,10 +104,14 @@ export async function emitIrSequence(
 
   for (let i = 0; i < cmds.length; i++) {
     const cmd = cmds[i];
-    console.log(`[ir-emitter]   发射 ${i + 1}/${cmds.length}: ${cmd.brand_code} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+    const idx = i + 1;
+    console.log(`[ir-emitter]   发射 ${idx}/${cmds.length}: ${cmd.brand_code} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
 
     const result = await emitIr(cmd);
-    results.push({ index: i + 1, brand: cmd.brand_code, ...result });
+    results.push({ index: idx, brand: cmd.brand_code, ...result });
+
+    // Notify UI of progress
+    onProgress?.(idx, cmds.length, cmd, result.success);
 
     // Delay between commands (skip delay after last)
     if (i < cmds.length - 1) {

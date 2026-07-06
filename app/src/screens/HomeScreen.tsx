@@ -209,7 +209,7 @@ export default function HomeScreen() {
     try {
       const result: CommandResult = await control(text);
       addAssistantMsg(result.message);
-      if (result.phase === "setup") {
+      if (result.phase === "setup" || result.phase === "discovery" || result.phase === "registration") {
         setSetupStep(result.setupStep || null);
         if (result.deviceId) setSetupDeviceId(result.deviceId);
         if (result.probeBrand) setProbeBrand(result.probeBrand);
@@ -223,21 +223,37 @@ export default function HomeScreen() {
 
       // Emit IR command(s) via phone's IR blaster
       if (result.irCommands && result.irCommands.length > 0) {
-        // Multi-command probe: emit sequentially
         const cmdCount = result.irCommands.length;
-        setIrStatus(`📡 正在发射 ${cmdCount} 条红外探测命令... (品牌: ${result.irCommands[0].brand_code})`);
+        const brand = result.irCommands[0].brand_code;
 
-        // Emit sequence in background
-        emitIrSequence(result.irCommands, 2000).then((seqResults) => {
+        // Probe command labels (match backend PROBE_COMBO_DESCS)
+        const probeLabels = [
+          "制冷26°C+自动风",
+          "制冷24°C+强风",
+          "制热26°C+自动风",
+          "制冷18°C+强风",
+          "关机",
+        ];
+
+        const emitResults: string[] = [];
+
+        emitIrSequence(result.irCommands, 2000, (idx, total, cmd, success) => {
+          const label = probeLabels[idx - 1] || `命令${idx}`;
+          const icon = success ? "📡" : "❌";
+          emitResults.push(`${icon} ${idx}/${total}: ${label}`);
+          // Show last 3 results + current status
+          const recent = emitResults.slice(-3).join("\n");
+          setIrStatus(`🔍 探测: ${brand}\n${recent}`);
+        }).then((seqResults) => {
           const successCount = seqResults.filter((r) => r.success).length;
           if (successCount === cmdCount) {
-            setIrStatus(`📡 已发射 ${cmdCount} 条命令 (${result.irCommands![0].brand_code})`);
+            setIrStatus(`✅ ${cmdCount}条命令已全部发射 (${brand})\n观察空调是否有反应...`);
           } else if (successCount > 0) {
-            setIrStatus(`⚠️ 仅发射 ${successCount}/${cmdCount} 条 (${result.irCommands![0].brand_code})`);
+            setIrStatus(`⚠️ ${successCount}/${cmdCount} 条已发射 (${brand})\n观察空调是否有反应...`);
           } else {
-            setIrStatus(`⚠️ 无红外硬件 — 无法发射命令 (${result.irCommands![0].brand_code})`);
+            setIrStatus(`❌ 无红外硬件，无法发射 (${brand})\n请确认手机支持红外`);
           }
-          setTimeout(() => setIrStatus(null), 8000);
+          setTimeout(() => setIrStatus(null), 10000);
         });
       } else if (result.irCommand) {
         const irResult = await emitIr(result.irCommand);
@@ -287,8 +303,12 @@ export default function HomeScreen() {
             <>
               <Text style={styles.setupIcon}>🔍</Text>
               <Text style={styles.setupTitle}>云端自动探测</Text>
-              {probeTotal > 0 && <Text style={styles.ptext}>第 {probeStep}/{probeTotal} 品牌</Text>}
-              <Text style={styles.setupHintSmall}>说"有反应"或"没反应"</Text>
+              {probeBrand ? (
+                <Text style={styles.ptext}>当前: {probeBrand} ({probeStep}/{probeTotal})</Text>
+              ) : (
+                probeTotal > 0 && <Text style={styles.ptext}>第 {probeStep}/{probeTotal} 品牌</Text>
+              )}
+              <Text style={styles.setupHintSmall}>观察空调，说"有反应"或"没反应"</Text>
             </>
           )}
           {setupStep === "verifying" && (
