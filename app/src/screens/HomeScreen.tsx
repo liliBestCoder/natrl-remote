@@ -112,6 +112,7 @@ export default function HomeScreen() {
           const text = e.results[0].transcript;
           console.log("[voice] native result:", text, "isFinal:", e.isFinal);
           if (e.isFinal) {
+            pressingRef.current = false;
             setListening(false);
             ExpoSpeechRecognitionModule.stop();
             handleSend(text);
@@ -120,29 +121,16 @@ export default function HomeScreen() {
       };
       const onError = (e: ExpoSpeechRecognitionErrorEvent) => {
         console.log("[voice] native error:", e.message);
+        pressingRef.current = false;
         setListening(false);
         if (e.message?.includes("permission") || e.message?.includes("not-allowed")) {
           setVoiceBlocked(true);
         }
       };
-      const onStart = () => setListening(true);
-      // When recognizer ends (timeout / no speech), restart if user still pressing.
-      // This prevents the "聆听中 → 按住说话" flash when recognizer times out.
-      const onEnd = () => {
-        console.log("[voice] native end event, pressing:", pressingRef.current);
-        if (pressingRef.current) {
-          // User still holding → restart recognizer
-          try {
-            ExpoSpeechRecognitionModule.start({
-              lang: "zh-CN",
-              interimResults: true,
-              continuous: false,
-            });
-          } catch (e: any) {
-            console.log("[voice] restart error:", e);
-          }
-        }
-      };
+      // Do NOT set listening based on audiostart/end — those events are unreliable
+      // and cause flicker. listening state is controlled solely by press gesture.
+      const onStart = () => { console.log("[voice] audiostart"); };
+      const onEnd = () => { console.log("[voice] end event (ignored for state)"); };
 
       ExpoSpeechRecognitionModule.addListener("result", onResult);
       ExpoSpeechRecognitionModule.addListener("error", onError);
@@ -428,7 +416,7 @@ export default function HomeScreen() {
   // === RENDER: Setup ===
   if (setupStep) {
     return (
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" enabled={Platform.OS === "ios"}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
         <Text style={styles.hdr}>Natrl Remote</Text>
         <View style={styles.setupCard}>
@@ -488,7 +476,7 @@ export default function HomeScreen() {
 
   // === RENDER: Main ===
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" enabled={Platform.OS === "ios"}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
     <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
       <Text style={styles.hdr}>Natrl Remote</Text>
       {activeDevice ? (isTV ? (
