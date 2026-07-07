@@ -946,6 +946,8 @@ async function execControlTv(
 
   ctx.toolCall = toolCall;
   ctx.phase = "control";
+  ctx.session.phase = "control";
+  ctx.session.deviceType = device.deviceType || "tv";
   ctx.deviceId = device.id;
 
   console.log(`[control] tool_call: control_tv brand=${device.brandCode} cmd=${command}`);

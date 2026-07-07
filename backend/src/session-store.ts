@@ -117,13 +117,13 @@ export function buildStateContext(session: SessionState): string {
 
     case "control": {
       lines.push("[当前阶段: 阶段3 — 日常使用]");
-      lines.push("设备已就绪。收到用户指令时必须调用对应函数：");
+      lines.push("⛔⛔⛔ 你的唯一任务：收到用户指令 → 调用 control_tv 或 control_ac → 停止 ⛔⛔⛔");
+      lines.push("⛔ 文字回复而不调用函数 = 红外不会发射 = 系统失效");
       if (session.deviceType === "tv") {
-        lines.push("  电视: control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\")");
+        lines.push("用户有电视。调用 control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\")");
       } else {
-        lines.push("  空调: control_ac(power:/temperature:/mode:/fan_speed:)");
+        lines.push("用户有空调。调用 control_ac(power:/temperature:/mode:/fan_speed:)");
       }
-      lines.push("⛔ 禁止只用文字回复，必须调用函数发射红外！");
       break;
     }
   }
