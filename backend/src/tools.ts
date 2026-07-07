@@ -212,14 +212,16 @@ export const TOOL_DEFINITIONS = [
       name: "control_tv",
       description:
         "控制电视。通过红外发射指令。" +
-        "常用命令: power(开关), vol_up(音量+), vol_down(音量-), ch_up(频道+), ch_down(频道-), mute(静音), input(信号源)。" +
-        "例如'打开电视'→{command:'power'}，'音量大一点'→{command:'vol_up'}，'换个台'→{command:'ch_up'}。",
+        "常用命令: power(开关), vol_up(音量+), vol_down(音量-), ch_up(频道+), ch_down(频道-), mute(静音), input(信号源)," +
+        "up(上), down(下), left(左), right(右), ok(确认), menu(菜单), back(返回), exit(退出), home(主页), info(信息)。" +
+        "例如'打开电视'→{command:'power'}，'回到主页'→{command:'home'}，'打开菜单'→{command:'menu'}。",
       parameters: {
         type: "object",
         properties: {
           command: {
             type: "string",
-            enum: ["power", "vol_up", "vol_down", "ch_up", "ch_down", "mute", "input"],
+            enum: ["power", "vol_up", "vol_down", "ch_up", "ch_down", "mute", "input",
+                   "up", "down", "left", "right", "ok", "menu", "back", "exit", "home", "info"],
             description: "电视命令",
           },
           device_id: {
@@ -916,6 +918,9 @@ async function execControlTv(
   const cmdNames: Record<string, string> = {
     power: "开关", vol_up: "音量+", vol_down: "音量-",
     ch_up: "频道+", ch_down: "频道-", mute: "静音", input: "信号源",
+    up: "上", down: "下", left: "左", right: "右",
+    ok: "确认", menu: "菜单", back: "返回", exit: "退出",
+    home: "主页", info: "信息",
   };
   const cmdName = cmdNames[command] || command;
 
