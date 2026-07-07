@@ -87,13 +87,48 @@ export async function getDevice(deviceId: string): Promise<Device | null> {
   const mem = memoryStore.get(deviceId);
   if (mem) return mem;
 
+  // Redis
   try {
     const r = await getRedis();
     if (r) {
       const raw = await r.get(`device:${deviceId}`);
-      return raw ? JSON.parse(raw) : null;
+      if (raw) return JSON.parse(raw);
     }
   } catch (_) {}
+
+  // MySQL fallback
+  try {
+    const pool = await getMysql();
+    if (pool) {
+      const [rows] = await pool.execute(
+        `SELECT id, user_id, room, name, device_type, brand_code, protocol, mqtt_topic, last_state, verified, created_at
+         FROM devices WHERE id = ?`, [deviceId]
+      ) as any;
+      if (rows.length > 0) {
+        const r = rows[0];
+        const dev: Device = {
+          id: r.id,
+          userId: r.user_id,
+          room: r.room,
+          name: r.name,
+          deviceType: r.device_type,
+          brandCode: r.brand_code || undefined,
+          protocol: r.protocol || undefined,
+          mqttTopic: r.mqtt_topic,
+          lastState: typeof r.last_state === "string" ? JSON.parse(r.last_state) : r.last_state,
+          verified: !!r.verified,
+          createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || ''),
+        };
+        // Populate memory so next lookup is fast
+        memoryStore.set(dev.id, dev);
+        if (!userDeviceIndex.has(dev.userId)) userDeviceIndex.set(dev.userId, new Set());
+        userDeviceIndex.get(dev.userId)!.add(dev.id);
+        return dev;
+      }
+    }
+  } catch (e: any) {
+    console.error("[db] MySQL getDevice error:", e.message);
+  }
   return null;
 }
 
@@ -109,15 +144,52 @@ export async function getUserDevices(userId: string): Promise<Device[]> {
     const r = await getRedis();
     if (r) {
       const redisIds = await r.smembers(`user:${userId}:devices`);
-      if (redisIds.length === 0) return [];
-      const pipeline = r.pipeline();
-      redisIds.forEach((id) => pipeline.get(`device:${id}`));
-      const results = await pipeline.exec();
-      return (results || [])
-        .map(([err, raw]) => (raw ? JSON.parse(raw as string) : null))
-        .filter(Boolean) as Device[];
+      if (redisIds.length > 0) {
+        const pipeline = r.pipeline();
+        redisIds.forEach((id) => pipeline.get(`device:${id}`));
+        const results = await pipeline.exec();
+        const devs = (results || [])
+          .map(([err, raw]) => (raw ? JSON.parse(raw as string) : null))
+          .filter(Boolean) as Device[];
+        if (devs.length > 0) return devs;
+      }
     }
   } catch (_) {}
+
+  // MySQL fallback — critical: memory/Redis lost on restart, MySQL persists
+  try {
+    const pool = await getMysql();
+    if (pool) {
+      const [rows] = await pool.execute(
+        `SELECT id, user_id, room, name, device_type, brand_code, protocol, mqtt_topic, last_state, verified, created_at
+         FROM devices WHERE user_id = ? ORDER BY created_at DESC`, [userId]
+      ) as any;
+      if (rows.length > 0) {
+        const devs: Device[] = (rows as any[]).map((r: any) => ({
+          id: r.id,
+          userId: r.user_id,
+          room: r.room,
+          name: r.name,
+          deviceType: r.device_type,
+          brandCode: r.brand_code || undefined,
+          protocol: r.protocol || undefined,
+          mqttTopic: r.mqtt_topic,
+          lastState: typeof r.last_state === "string" ? JSON.parse(r.last_state) : r.last_state,
+          verified: !!r.verified,
+          createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || ''),
+        }));
+        // Populate memory
+        for (const dev of devs) {
+          memoryStore.set(dev.id, dev);
+          if (!userDeviceIndex.has(dev.userId)) userDeviceIndex.set(dev.userId, new Set());
+          userDeviceIndex.get(dev.userId)!.add(dev.id);
+        }
+        return devs;
+      }
+    }
+  } catch (e: any) {
+    console.error("[db] MySQL getUserDevices error:", e.message);
+  }
   return [];
 }
 
