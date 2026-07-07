@@ -184,7 +184,9 @@ export async function processInput(
         // The user needs time to observe the AC and give feedback.
         if (ctx.toolCall) {
           console.log(`[nlp] ⛔ 强制停止: ${fnName} 返回了tool_call(${ctx.toolCall.name})，等待用户反馈`);
-          ctx.message = choice.message.content || "";
+          // LLM may not provide content when returning tool_calls (content=null).
+          // Fall back to the tool_call's own message (e.g. probe_brand status text).
+          ctx.message = choice.message.content || ctx.toolCall.message || "";
           break;
         }
       }
