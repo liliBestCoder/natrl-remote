@@ -242,7 +242,11 @@ export default function HomeScreen() {
             if (irResult.success) {
               setIrStatus(`📺 已发送: ${brandCode} 开关命令\n观察电视是否有反应...`);
             } else {
-              setIrStatus(`❌ TV发射失败 (${brandCode})`);
+              const errMsg = irResult.method === "no_encoder"
+                ? `❌ 红外编码模块未加载 (libnatrl_ir.so)，请检查 APK 是否包含 .so 文件`
+                : `❌ TV发射失败 (${brandCode}) — ${irResult.method}`;
+              setIrStatus(errMsg);
+              addAssistantMsg(errMsg);
             }
             setTimeout(() => setIrStatus(null), 10000);
           } else {
@@ -265,7 +269,12 @@ export default function HomeScreen() {
             ).then((seqResults) => {
               const successCount = seqResults.filter((r) => r.success).length;
               const total = probeCmds.length;
-              if (successCount === total) {
+              const allNoEncoder = seqResults.every((r) => r.method === "no_encoder");
+              if (allNoEncoder) {
+                const msg = `❌ 红外编码模块未加载 (libnatrl_ir.so)\n请确认 APK 包含 .so 文件或手机架构匹配`;
+                setIrStatus(msg);
+                addAssistantMsg(msg);
+              } else if (successCount === total) {
                 setIrStatus(`✅ ${total}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
               } else if (successCount > 0) {
                 setIrStatus(`⚠️ ${successCount}/${total} 条已发射 (${brandCode})\n观察空调是否有反应...`);
@@ -277,7 +286,6 @@ export default function HomeScreen() {
           }
 
         } else if (tc.name === "control_ac") {
-          // Single control command — encode locally then emit
           const irResult = await encodeAndEmit(
             tc.args.brand_code || "gree",
             tc.args.temperature || 26,
@@ -287,12 +295,15 @@ export default function HomeScreen() {
           if (irResult.success) {
             setIrStatus(`📡 红外已发射 (${tc.args.brand_code} ${tc.args.temperature}°C ${tc.args.mode})`);
           } else {
-            setIrStatus(`⚠️ 发射失败 (${tc.args.brand_code}) — 方法: ${irResult.method}`);
+            const errMsg = irResult.method === "no_encoder"
+              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)，无法发射`
+              : `⚠️ 发射失败 (${tc.args.brand_code}) — ${irResult.method}`;
+            setIrStatus(errMsg);
+            addAssistantMsg(errMsg);
           }
           setTimeout(() => setIrStatus(null), 6000);
 
         } else if (tc.name === "control_tv") {
-          // TV command — encode locally then emit
           const irResult = await encodeAndEmitTV(
             tc.args.brand_code || "hisense",
             tc.args.command || "power",
@@ -300,7 +311,11 @@ export default function HomeScreen() {
           if (irResult.success) {
             setIrStatus(`📺 红外已发射 (${tc.args.brand_code} ${tc.args.command})`);
           } else {
-            setIrStatus(`⚠️ TV发射失败 (${tc.args.brand_code}) — 方法: ${irResult.method}`);
+            const errMsg = irResult.method === "no_encoder"
+              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)，无法发射`
+              : `⚠️ TV发射失败 (${tc.args.brand_code}) — ${irResult.method}`;
+            setIrStatus(errMsg);
+            addAssistantMsg(errMsg);
           }
           setTimeout(() => setIrStatus(null), 6000);
         }
