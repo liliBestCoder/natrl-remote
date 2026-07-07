@@ -585,34 +585,32 @@ export default function HomeScreen() {
               </Text>
             </View>
           )}
-          {/* Mode switch ABOVE the bar */}
-          <TouchableOpacity style={styles.modeSwitchAbove} onPress={() => setTextMode(true)}>
-            <Text style={styles.modeSwitchIcon}>⌨</Text>
-          </TouchableOpacity>
-          {/* Voice bar: gray background, centered text */}
-          <Pressable
-            style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
-            onPressIn={handlePressIn}
-            onPressOut={handlePressOut}
-            delayLongPress={0}>
-            <Text style={styles.vIcon}>{listening ? "⏺" : voiceBlocked ? "🔇" : "🎙️"}</Text>
-            <Text style={styles.vText}>
-              {listening ? "正在聆听...松开发送"
-                : voiceBlocked ? "已阻止（点我重试）"
-                : "按住说话"}
-            </Text>
-          </Pressable>
+          {/* Voice bar: gray background, centered text + keyboard switch on right */}
+          <View style={styles.vBarRow}>
+            <Pressable
+              style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
+              onPressIn={handlePressIn}
+              onPressOut={handlePressOut}
+              delayLongPress={0}>
+              <Text style={styles.vIcon}>{listening ? "⏺" : voiceBlocked ? "🔇" : "🎙️"}</Text>
+              <Text style={styles.vText}>
+                {listening ? "正在聆听...松开发送"
+                  : voiceBlocked ? "已阻止（点我重试）"
+                  : "按住说话"}
+              </Text>
+            </Pressable>
+            <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(true)}>
+              <Text style={styles.modeSwitchIcon}>⌨</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       );
     }
 
-    // === TEXT MODE: mode switch above, input bar below ===
+    // === TEXT MODE: input bar with voice switch on right ===
     const ph = acDevice ? "输入指令..." : "比如：我卧室有个空调";
     return (
       <View>
-        <TouchableOpacity style={styles.modeSwitchAbove} onPress={() => setTextMode(false)}>
-          <Text style={styles.modeSwitchIcon}>🎤</Text>
-        </TouchableOpacity>
         <View style={styles.tBar}>
           <TextInput
             style={styles.tInput}
@@ -625,6 +623,9 @@ export default function HomeScreen() {
             editable={!loading}
             autoFocus
           />
+          <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(false)}>
+            <Text style={styles.modeSwitchIcon}>🎤</Text>
+          </TouchableOpacity>
           {input.trim().length > 0 && (
             <TouchableOpacity style={styles.tSend} onPress={() => handleSend()} disabled={loading}>
               {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.tSendT}>↑</Text>}
@@ -688,6 +689,7 @@ const styles = StyleSheet.create({
   voiceNotice: { backgroundColor: "#332b00", borderRadius: 10, padding: 10, marginBottom: 6, borderColor: "#665500", borderWidth: 1 },
   voiceNoticeText: { color: "#ffa726", fontSize: 13, textAlign: "center", lineHeight: 18 },
   vBtn: {
+    flex: 1,
     flexDirection: "row", alignItems: "center", justifyContent: "center",
     backgroundColor: "#30363d", borderRadius: 28, paddingVertical: 16,
   },
@@ -706,8 +708,9 @@ const styles = StyleSheet.create({
   tSend: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#238636", justifyContent: "center", alignItems: "center", marginLeft: 4 },
   tSendT: { color: "#fff", fontSize: 20, fontWeight: "700" },
 
-  // Mode switch — positioned above the bar
-  modeSwitchAbove: { alignSelf: "flex-end", width: 36, height: 36, borderRadius: 18, justifyContent: "center", alignItems: "center", marginBottom: 6, backgroundColor: "#30363d" },
+  // Mode switch — inside the bar, right side
+  vBarRow: { flexDirection: "row", alignItems: "center" },
+  modeSwitch: { width: 40, height: 40, borderRadius: 20, justifyContent: "center", alignItems: "center", marginLeft: 8, backgroundColor: "#30363d" },
   modeSwitchIcon: { fontSize: 18 },
 
   // Misc
