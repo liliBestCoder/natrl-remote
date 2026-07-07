@@ -55,6 +55,40 @@ export interface IRCommand {
   raw_timing: number[];
 }
 
+// === Tool Call Types (new: client-side IR encoding) ===
+
+export interface ToolCallArgs {
+  brand_code?: string;
+  temperature?: number;
+  mode?: string;
+  fan_speed?: string;
+  power?: boolean;
+  device_id?: string;
+  room?: string;
+  device_type?: string;
+  device_name?: string;
+  reacted?: boolean;
+  confirmed?: boolean;
+  name?: string;
+  // Probe-specific
+  probe_commands?: Array<{
+    temperature: number;
+    mode: string;
+    fan_speed: string;
+    power: boolean;
+    label: string;
+  }>;
+  probe_brand?: string;
+  probe_step?: number;
+  probe_total?: number;
+}
+
+export interface ToolCall {
+  name: string;
+  args: ToolCallArgs;
+  message: string;   // human-readable message for the user
+}
+
 // === Device Registry Types ===
 
 export interface DeviceState {
@@ -109,7 +143,7 @@ export interface ProbeStep {
   brandCode: string;
   attempted: boolean;
   userResponse: "yes" | "no" | "pending";
-  irCommand: IRCommand;
+  irCommand: IRCommand | null;  // nullable — no longer generated server-side
 }
 
 export interface ProbeSession {

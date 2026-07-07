@@ -159,10 +159,15 @@ devicesRouter.post("/:id/probe", async (req: Request, res: Response) => {
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
+  const firstCmd = firstStep.irCommand;
+  if (!firstCmd) {
+    res.status(500).json({ error: "No IR command available for first probe step" });
+    return;
+  }
   const payload = Buffer.from(
     JSON.stringify({
-      raw_timing: firstStep.irCommand.raw_timing,
-      carrier_freq: firstStep.irCommand.carrier_freq,
+      raw_timing: firstCmd.raw_timing,
+      carrier_freq: firstCmd.carrier_freq,
     })
   );
   await publishCommand(device.mqttTopic, payload);
@@ -229,10 +234,15 @@ devicesRouter.post(
     }
 
     nextStep.attempted = true;
+    const nextCmd = nextStep.irCommand;
+    if (!nextCmd) {
+      res.status(500).json({ error: "No IR command available for next probe step" });
+      return;
+    }
     const payload = Buffer.from(
       JSON.stringify({
-        raw_timing: nextStep.irCommand.raw_timing,
-        carrier_freq: nextStep.irCommand.carrier_freq,
+        raw_timing: nextCmd.raw_timing,
+        carrier_freq: nextCmd.carrier_freq,
       })
     );
     await publishCommand(device.mqttTopic, payload);

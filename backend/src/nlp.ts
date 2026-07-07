@@ -10,7 +10,7 @@
 
 import { config } from "./config";
 import { TOOL_DEFINITIONS, executeToolCall, ToolContext } from "./tools";
-import { IRCommand } from "./types";
+import { ToolCall } from "./types";
 import {
   getSession, addUserMessage, addAssistantMessage,
   buildStateContext, SessionState,
@@ -60,8 +60,7 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能空调语音助手。通过红
 
 export interface ProcessResult {
   message: string;
-  irCommand?: IRCommand;            // single (for control_ac)
-  irCommands?: IRCommand[];         // multiple commands for one brand (probe)
+  toolCall?: ToolCall;              // tool_call JSON for client-side IR encoding
   phase: "discovery" | "registration" | "control";
   setupStep?: "probing" | "verifying" | "done";
   deviceId?: string;
@@ -156,18 +155,18 @@ export async function processInput(
           content: toolResult,
         });
 
-        // ⛔ FORCE STOP: if the tool returned IR commands for the phone to emit,
+        // ⛔ FORCE STOP: if the tool returned a tool_call for the phone to execute,
         // break immediately — the LLM must NOT continue calling more tools.
         // The user needs time to observe the AC and give feedback.
-        if (ctx.irCommands && ctx.irCommands.length > 0) {
-          console.log(`[nlp] ⛔ 强制停止: ${fnName} 返回了IR命令，等待用户反馈`);
+        if (ctx.toolCall) {
+          console.log(`[nlp] ⛔ 强制停止: ${fnName} 返回了tool_call(${ctx.toolCall.name})，等待用户反馈`);
           ctx.message = choice.message.content || "";
           break;
         }
       }
 
-      // If we broke out of the inner loop due to IR commands, also break outer
-      if (ctx.irCommands && ctx.irCommands.length > 0) {
+      // If we broke out of the inner loop due to tool_call, also break outer
+      if (ctx.toolCall) {
         break;
       }
 
@@ -190,13 +189,9 @@ export async function processInput(
     deviceId: ctx.deviceId,
   };
 
-  if (ctx.irCommand) {
-    result.irCommand = ctx.irCommand;
-  }
-
-  if (ctx.irCommands && ctx.irCommands.length > 0) {
-    result.irCommands = ctx.irCommands;
-    console.log(`[nlp] 返回 ${ctx.irCommands.length} 条IR命令到前端: ${ctx.irCommands.map(c => c.brand_code).join(", ")}`);
+  if (ctx.toolCall) {
+    result.toolCall = ctx.toolCall;
+    console.log(`[nlp] 返回 tool_call(${ctx.toolCall.name}) 到前端: ${JSON.stringify(ctx.toolCall.args).substring(0, 150)}`);
   }
 
   if (ctx.phase === "discovery" || ctx.phase === "registration") {

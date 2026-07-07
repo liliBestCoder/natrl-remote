@@ -48,14 +48,44 @@ export interface IRCommand {
   raw_timing: number[];
 }
 
+// Tool call — returned by backend for client-side execution
+export interface ToolCallArgs {
+  brand_code?: string;
+  temperature?: number;
+  mode?: string;
+  fan_speed?: string;
+  power?: boolean;
+  device_id?: string;
+  room?: string;
+  device_type?: string;
+  device_name?: string;
+  reacted?: boolean;
+  confirmed?: boolean;
+  name?: string;
+  probe_commands?: Array<{
+    temperature: number;
+    mode: string;
+    fan_speed: string;
+    power: boolean;
+    label: string;
+  }>;
+  probe_brand?: string;
+  probe_step?: number;
+  probe_total?: number;
+}
+
+export interface ToolCall {
+  name: string;
+  args: ToolCallArgs;
+  message: string;
+}
+
 export interface CommandResult {
   success: boolean;
-  phase: "discovery" | "setup" | "control";
+  phase: "discovery" | "registration" | "control";
   deviceId: string;
   intent: Intent;
-  irCommand?: IRCommand | null;
-  irCommands?: IRCommand[] | null;
-  mqttPublished?: boolean;
+  toolCall?: ToolCall | null;
   message: string;
   setupStep?: "learning" | "probing" | "verifying" | "done";
   probeBrand?: string;

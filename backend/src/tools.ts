@@ -4,19 +4,23 @@
  * DeepSeek function calling tools. The LLM decides which tool(s) to call
  * and what arguments to pass. The backend just executes and returns results.
  *
+ * ═══ NEW ARCHITECTURE ═══
+ * Backend: NLP intent analysis → produces tool_call JSON (parameters only)
+ * Client:  Receives tool_call → calls local .so library (IRremoteESP8266)
+ *          → generates raw_timing → emits via Android ConsumerIrManager
+ *
+ * No IR waveform data flows through the backend anymore.
+ * The .so library is compiled locally and packaged with the APK.
+ *
  * IR limitation: infrared is TRANSMIT-ONLY. We cannot read physical state.
- * Tools return "IR sent" status, not confirmed device state.
  */
 
 import { v4 as uuidv4 } from "uuid";
 import {
   getUserDevices, getDevice, setDevice, updateDeviceState, deleteDevice,
 } from "./device-registry";
-import { generateWaveform, getProbeCommands, ProbeCommandSet } from "./ir-engine-client";
-import { publishCommand } from "./mqtt-client";
-import { Device, DeviceState, IRCommand, ProbeSession } from "./types";
-import { config } from "./config";
-import { SessionState, getSession } from "./session-store";
+import { Device, DeviceState, ToolCall, ProbeSession } from "./types";
+import { SessionState } from "./session-store";
 
 // ─── Tool Context (mutable, accumulates results for frontend response) ───
 
@@ -24,8 +28,7 @@ export interface ToolContext {
   userId: string;
   session: SessionState;              // Live session state (read/write)
   message: string;
-  irCommand?: IRCommand;              // single (for control_ac)
-  irCommands?: IRCommand[];           // multiple commands for one brand (probe)
+  toolCall?: ToolCall;                // single tool call for client to execute
   phase: "discovery" | "registration" | "control";
   setupStep?: "probing" | "verifying" | "done";
   deviceId?: string;
@@ -349,48 +352,29 @@ async function execDiscoverDevice(
       ? "客厅空调"
       : "空调");
 
-  const id = uuidv4();
-  const device: Device = {
-    id,
-    userId: ctx.userId,
-    room,
-    name: devName,
-    deviceType,
-    brandCode: null,
-    protocol: null,
-    mqttTopic: `home/${room}/${id}`,
-    lastState: {
-      power: false,
-      temperature: 24,
-      mode: "cool",
-      fan_speed: "auto",
-    },
-    verified: false,
-    createdAt: new Date().toISOString(),
-  };
-
-  await setDevice(device);
-
+  // Don't create device yet — only create after probing succeeds.
+  // Store intent in session for probe_brand to use.
+  const pendingId = uuidv4();
   ctx.phase = "discovery";
-  ctx.deviceId = device.id;
+  ctx.deviceId = pendingId;
 
-  // Update session state
   ctx.session.phase = "discovery";
-  ctx.session.deviceId = device.id;
-  ctx.session.deviceType = device.deviceType;
-  ctx.session.room = device.room;
+  ctx.session.deviceId = pendingId;
+  ctx.session.deviceType = deviceType;
+  ctx.session.room = room;
+  ctx.session.pendingDeviceName = devName;
   ctx.session.probingActive = false;
   ctx.session.matchedBrand = null as any;
   ctx.session.brandHint = undefined;
 
   return JSON.stringify({
     success: true,
-    device_id: device.id,
-    device_name: device.name,
-    room: device.room,
-    device_type: device.deviceType,
+    device_id: pendingId,
+    device_name: devName,
+    room: room,
+    device_type: deviceType,
     verified: false,
-    hint: "设备已创建。请先询问用户品牌的名称，然后调用 probe_brand 开始探测。",
+    hint: "请询问用户空调品牌，然后调用 probe_brand 开始探测。只有探测成功确认品牌后，设备才会被创建。",
   });
 }
 
@@ -398,41 +382,30 @@ async function execProbeBrand(
   args: any,
   ctx: ToolContext
 ): Promise<string> {
-  let deviceId = args.device_id;
+  let deviceId = args.device_id || ctx.session.deviceId;
   if (!deviceId) {
-    const devices = await getUserDevices(ctx.userId);
-    const unverified = devices.filter((d) => !d.verified);
-    if (unverified.length === 0) {
-      return JSON.stringify({
-        error: "没有需要探测的设备。请先调用 discover_device。",
-      });
-    }
-    deviceId = unverified[0].id;
+    return JSON.stringify({
+      error: "没有待探测的设备。请先调用 discover_device。",
+    });
   }
 
-  const device = await getDevice(deviceId);
-  if (!device) {
-    return JSON.stringify({ error: `设备 ${deviceId} 不存在` });
-  }
+  // Use session data (device not yet created in DB)
+  const room = ctx.session.room || "卧室";
+  const devName = ctx.session.pendingDeviceName || "空调";
 
-  // ── Get ALL probe command sets (each brand has multiple commands) ──
-  const allProbeSets = await getProbeCommands(26, "cool", "auto");
-  console.log(`[probe] ========================================`);
-  console.log(`[probe] 🔍 开始品牌探测 — device=${deviceId}`);
-  console.log(`[probe] 品牌总数=${allProbeSets.length}, 每品牌命令数=${allProbeSets[0]?.commands.length || 0}`);
+  // Get all brand codes to probe
+  const allBrands = BRAND_MARKET_ORDER;
 
   // Reorder based on brand hint
-  let orderedSets = allProbeSets;
+  let orderedBrands = allBrands;
   const hint = args.brand_hint?.trim();
   if (hint) {
     ctx.session.brandHint = hint;
     const matchedCodes = matchBrandHint(hint);
     console.log(`[probe] 用户提示品牌: "${hint}" → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
     if (matchedCodes.length > 0) {
-      const matched = allProbeSets.filter((s) => matchedCodes.includes(s.brand_code));
-      const others = allProbeSets.filter((s) => !matchedCodes.includes(s.brand_code));
-      orderedSets = [...matched, ...others];
-      console.log(`[probe] 重排: ${orderedSets.map(s => s.brand_code).join(" → ")}`);
+      orderedBrands = [...matchedCodes.filter(b => allBrands.includes(b)), ...allBrands.filter(b => !matchedCodes.includes(b))];
+      console.log(`[probe] 重排: ${orderedBrands.join(" → ")}`);
     }
   } else {
     ctx.session.brandHint = undefined;
@@ -441,94 +414,92 @@ async function execProbeBrand(
 
   // ── Build probe session (one step per brand) ──
   const session: ProbeSession = {
-    deviceId: device.id,
-    steps: orderedSets.map((set) => ({
-      brandCode: set.brand_code,
+    deviceId,
+    steps: orderedBrands.map((brandCode) => ({
+      brandCode,
       attempted: false,
       userResponse: "pending",
-      irCommand: set.commands[0], // representative command
+      irCommand: null as any, // no IR generated server-side anymore
     })),
     matchedBrand: null,
     complete: false,
   };
-  probeSessions.set(device.id, session);
+  probeSessions.set(deviceId, session);
 
-  // ── Pick FIRST brand, generate MULTIPLE probe commands ──
-  const firstBrand = orderedSets[0];
+  // ── Pick FIRST brand, prepare multi-command probe ──
+  const firstBrandCode = orderedBrands[0];
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
-  // Generate multiple varied commands for this brand
-  const brandCode = firstBrand.brand_code;
-  const probeCombos: Array<{ temp: number; mode: string; fan: string; power: boolean; label: string }> = [
-    { temp: 26, mode: "cool", fan: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-    { temp: 24, mode: "cool", fan: "high",  power: true,  label: "开机+制冷24°C+强风" },
-    { temp: 26, mode: "heat", fan: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-    { temp: 18, mode: "cool", fan: "high",  power: true,  label: "开机+制冷18°C+强风" },
-    { temp: 26, mode: "cool", fan: "auto",  power: false, label: "关机" },
+  // Probe commands (params only, client encodes with .so)
+  const probeCombos: Array<{ temperature: number; mode: string; fan_speed: string; power: boolean; label: string }> = [
+    { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+    { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
+    { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+    { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
+    { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
   ];
 
-  console.log(`[probe] ───── 第 1/${orderedSets.length} 个品牌: ${brandCode} ─────`);
-  console.log(`[probe] 生成 ${probeCombos.length} 条探测命令:`);
+  console.log(`[probe] ───── 第 1/${orderedBrands.length} 个品牌: ${firstBrandCode} ─────`);
+  console.log(`[probe] 准备 ${probeCombos.length} 条探测命令(客户端本地编码)`);
 
-  const commands: IRCommand[] = [];
-  for (let i = 0; i < probeCombos.length; i++) {
-    const combo = probeCombos[i];
-    const cmd = await generateWaveform(brandCode, combo.temp, combo.mode, combo.fan, combo.power);
-    commands.push(cmd);
-    console.log(`[probe]   命令${i + 1}: ${combo.label} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz | first_8=${JSON.stringify(cmd.raw_timing.slice(0, 8))}`);
+  // Build tool_call for client
+  const brandDisplay = getBrandDisplayName(firstBrandCode);
+  const cmdDesc = probeCombos.map((c, i) => `  命令${i + 1}: ${c.label}`).join("\n");
+  const hintMsg = hint ? `\n🎯 优先尝试: "${hint}" → ${brandDisplay}` : "";
 
-    await publishCommand(device.mqttTopic, Buffer.from(
-      JSON.stringify({ raw_timing: cmd.raw_timing, carrier_freq: cmd.carrier_freq })
-    ));
-  }
+  const toolCall: ToolCall = {
+    name: "probe_brand",
+    args: {
+      brand_code: firstBrandCode,
+      probe_brand: brandDisplay,
+      probe_step: 1,
+      probe_total: orderedBrands.length,
+      probe_commands: probeCombos.map(c => ({
+        temperature: c.temperature,
+        mode: c.mode,
+        fan_speed: c.fan_speed,
+        power: c.power,
+        label: c.label,
+      })),
+    },
+    message: `📡 正在探测品牌: **${brandDisplay}** (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察空调：\n• 听到"嘀"声或蜂鸣 → 说"有反应"\n• 指示灯闪烁 → 说"有反应"\n• 空调开机/出风 → 说"有反应"\n• 完全没动静 → 说"没反应"`,
+  };
 
-  // Return all commands for this brand to frontend
-  ctx.irCommands = commands;
+  ctx.toolCall = toolCall;
   ctx.phase = "discovery";
   ctx.setupStep = "probing";
-  ctx.deviceId = device.id;
-  ctx.probeBrand = firstBrand.brand_code;
+  ctx.deviceId = deviceId;
+  ctx.probeBrand = firstBrandCode;
   ctx.probeStep = 1;
-  ctx.probeTotal = session.steps.length;
+  ctx.probeTotal = orderedBrands.length;
 
   // Update session
   ctx.session.phase = "discovery";
   ctx.session.probingActive = true;
   ctx.session.probeStep = 1;
-  ctx.session.probeTotal = session.steps.length;
-  ctx.session.currentProbeBrand = firstBrand.brand_code;
-  ctx.session.deviceId = device.id;
+  ctx.session.probeTotal = orderedBrands.length;
+  ctx.session.currentProbeBrand = firstBrandCode;
+  ctx.session.deviceId = deviceId;
 
-  // Build human-readable command list
-  const cmdDesc = firstBrand.commands.map((_, i) => {
-    const desc = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
-    return `  命令${i + 1}: ${desc}`;
-  }).join("\n");
-
-  const brandDisplay = getBrandDisplayName(firstBrand.brand_code);
-  const hintMsg = hint ? `\n🎯 优先尝试: "${hint}" → ${brandDisplay}` : "";
-
-  console.log(`[probe] ✅ 品牌 ${firstBrand.brand_code} 的 ${firstBrand.commands.length} 条命令已发送`);
+  console.log(`[probe] ✅ 品牌 ${firstBrandCode} 的 ${probeCombos.length} 条命令参数已准备`);
 
   return JSON.stringify({
     success: true,
-    brand_code: firstBrand.brand_code,
+    brand_code: firstBrandCode,
     brand_display: brandDisplay,
-    command_count: firstBrand.commands.length,
+    command_count: probeCombos.length,
     step: 1,
-    total: session.steps.length,
-    message: `📡 正在探测品牌: **${brandDisplay}** (第 1/${orderedSets.length} 个)${hintMsg}\n\n发送了 ${firstBrand.commands.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察空调：\n• 听到"嘀"声或蜂鸣 → 说"有反应"\n• 指示灯闪烁 → 说"有反应"\n• 空调开机/出风 → 说"有反应"\n• 完全没动静 → 说"没反应"`,
+    total: orderedBrands.length,
+    tool_call: toolCall,
   });
 }
 
-// Probe combo descriptions (matches PROBE_COMBOS in ir-engine-client.ts)
-const PROBE_COMBO_DESCS = [
-  "开机+制冷26°C+自动风",
-  "开机+制冷24°C+强风",
-  "开机+制热26°C+自动风",
-  "开机+制冷18°C+强风",
-  "关机",
+// Top AC brands by market share (used for probing order)
+const BRAND_MARKET_ORDER = [
+  "gree", "midea", "haier", "tcl", "kelon", "panasonic",
+  "coolix", "daikin", "mitsubishi", "fujitsu", "hitachi",
+  "samsung", "carrier", "lg", "toshiba", "electra", "whirlpool",
 ];
 
 function getBrandDisplayName(brandCode: string): string {
@@ -544,8 +515,8 @@ async function execRespondProbe(
 
   // Find active probe session
   let deviceId: string | null = null;
-  for (const [id, session] of probeSessions.entries()) {
-    if (!session.complete) {
+  for (const [id, s] of probeSessions.entries()) {
+    if (!s.complete) {
       deviceId = id;
       break;
     }
@@ -557,11 +528,7 @@ async function execRespondProbe(
     });
   }
 
-  const device = await getDevice(deviceId);
-  if (!device) {
-    return JSON.stringify({ error: "设备不存在" });
-  }
-
+  // Device not yet created in DB — use session data
   const session = probeSessions.get(deviceId)!;
 
   // Find the current (attempted but pending) step
@@ -575,20 +542,34 @@ async function execRespondProbe(
     console.log(`[probe] 用户反馈: ${reacted ? "有反应 ✅" : "没反应 ❌"} → 品牌 ${currentStep.brandCode} → ${currentStep.userResponse}`);
   }
 
-  ctx.deviceId = device.id;
+  ctx.deviceId = deviceId;
 
   if (reacted && currentStep) {
-    // ── Brand matched! ──
+    // ── Brand matched! Create device in DB now ──
     session.matchedBrand = currentStep.brandCode;
     session.complete = true;
-    probeSessions.delete(device.id);
+    probeSessions.delete(deviceId);
 
-    device.brandCode = currentStep.brandCode;
-    device.protocol = "NEC";
-    await setDevice(device);
+    const now = new Date().toISOString();
+    const room = ctx.session.room || "卧室";
+    const devName = ctx.session.pendingDeviceName || `${room}空调`;
+    const newDevice: Device = {
+      id: deviceId,
+      userId: ctx.userId,
+      room,
+      name: devName,
+      deviceType: (ctx.session.deviceType as Device["deviceType"]) || "ac",
+      brandCode: currentStep.brandCode,
+      protocol: "NEC",
+      mqttTopic: `home/${room}/${deviceId}`,
+      lastState: { power: false, temperature: 24, mode: "cool", fan_speed: "auto" },
+      verified: true,
+      createdAt: now,
+    };
+    await setDevice(newDevice);
 
-    const attemptedCount = session.steps.filter((s) => s.attempted).length;
-    console.log(`[probe] ✅ 匹配成功! 品牌: ${currentStep.brandCode} (第 ${attemptedCount}/${session.steps.length} 个尝试)`);
+    const attemptedCount = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
+    console.log(`[probe] ✅ 匹配成功! 品牌: ${currentStep.brandCode} (第 ${attemptedCount}/${session.steps.length} 个尝试) → 设备已创建并验证`);
 
     ctx.phase = "registration";
     ctx.session.phase = "registration";
@@ -603,18 +584,19 @@ async function execRespondProbe(
       matched_brand_display: brandName,
       attempts: attemptedCount,
       total: session.steps.length,
-      status: "brand_identified",
-      message: `🎉 品牌匹配成功！已识别为 **${brandName}**（共尝试了 ${attemptedCount} 个品牌）。\n请询问用户'想给它起个什么名字？'，等用户提供名字后调用 register_device。`,
+      status: "device_registered",
+      device_id: deviceId,
+      message: `🎉 探测成功！已识别为 **${brandName}**，设备「${devName}」已自动注册。你可以直接说"打开空调"来控制。`,
     });
   }
 
   // ── Not matched → try next brand ──
-  const nextUnattempted = session.steps.findIndex((s) => !s.attempted);
+  const nextUnattempted = session.steps.findIndex((s: import("./types").ProbeStep) => !s.attempted);
 
   if (nextUnattempted < 0) {
     // All brands exhausted
     session.complete = true;
-    probeSessions.delete(device.id);
+    probeSessions.delete(deviceId);
 
     ctx.session.probingActive = false;
     ctx.session.phase = "discovery";
@@ -630,70 +612,71 @@ async function execRespondProbe(
     });
   }
 
-  // ── Advance to next brand, generate multi-commands ──
+  // ── Advance to next brand, prepare multi-command probe params ──
   const nextStep = session.steps[nextUnattempted];
   nextStep.attempted = true;
   const brandCode = nextStep.brandCode;
 
-  // Generate multiple varied commands for this brand
-  const probeCombos: Array<{ temp: number; mode: string; fan: string; power: boolean; label: string }> = [
-    { temp: 26, mode: "cool", fan: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-    { temp: 24, mode: "cool", fan: "high",  power: true,  label: "开机+制冷24°C+强风" },
-    { temp: 26, mode: "heat", fan: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-    { temp: 18, mode: "cool", fan: "high",  power: true,  label: "开机+制冷18°C+强风" },
-    { temp: 26, mode: "cool", fan: "auto",  power: false, label: "关机" },
+  // Probe commands (params only, client encodes with .so)
+  const probeCombos: Array<{ temperature: number; mode: string; fan_speed: string; power: boolean; label: string }> = [
+    { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+    { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
+    { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+    { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
+    { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
   ];
 
-  console.log(`[probe] ───── 第 ${nextUnattempted + 1}/${session.steps.length} 个品牌: ${brandCode} ─────`);
-  console.log(`[probe] 生成 ${probeCombos.length} 条探测命令:`);
+  const attemptedCount2 = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
+  const progressPct = Math.round((attemptedCount2 / session.steps.length) * 100);
 
-  const nextCommands: IRCommand[] = [];
-  for (let i = 0; i < probeCombos.length; i++) {
-    const combo = probeCombos[i];
-    const cmd = await generateWaveform(brandCode, combo.temp, combo.mode, combo.fan, combo.power);
-    nextCommands.push(cmd);
-    console.log(`[probe]   命令${i + 1}: ${combo.label} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz | first_8=${JSON.stringify(cmd.raw_timing.slice(0, 8))}`);
+  console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} ─────`);
 
-    await publishCommand(device.mqttTopic, Buffer.from(
-      JSON.stringify({ raw_timing: cmd.raw_timing, carrier_freq: cmd.carrier_freq })
-    ));
-  }
-  ctx.irCommands = nextCommands;
+  const brandDisplay = getBrandDisplayName(brandCode);
+  const cmdDesc = probeCombos.map((c, i) => `  命令${i + 1}: ${c.label}`).join("\n");
 
-  const attemptedCount = session.steps.filter((s) => s.attempted).length;
-  const progressPct = Math.round((attemptedCount / session.steps.length) * 100);
+  const toolCall: ToolCall = {
+    name: "probe_brand",
+    args: {
+      brand_code: brandCode,
+      probe_brand: brandDisplay,
+      probe_step: attemptedCount2,
+      probe_total: session.steps.length,
+      probe_commands: probeCombos.map(c => ({
+        temperature: c.temperature,
+        mode: c.mode,
+        fan_speed: c.fan_speed,
+        power: c.power,
+        label: c.label,
+      })),
+    },
+    message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount2}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n观察空调反应后说"有反应"或"没反应"。`,
+  };
 
-  // Update context
+  ctx.toolCall = toolCall;
   ctx.phase = "discovery";
   ctx.setupStep = "probing";
-  ctx.probeBrand = nextStep.brandCode;
-  ctx.probeStep = attemptedCount;
+  ctx.probeBrand = brandCode;
+  ctx.probeStep = attemptedCount2;
   ctx.probeTotal = session.steps.length;
 
   // Update session
-  ctx.session.probeStep = attemptedCount;
+  ctx.session.probeStep = attemptedCount2;
   ctx.session.probeTotal = session.steps.length;
-  ctx.session.currentProbeBrand = nextStep.brandCode;
+  ctx.session.currentProbeBrand = brandCode;
   ctx.session.probingActive = true;
   ctx.session.phase = "discovery";
 
-  const brandDisplay = getBrandDisplayName(nextStep.brandCode);
-  const cmdDesc = (ctx.irCommands || []).map((_, i) => {
-    const desc = i < PROBE_COMBO_DESCS.length ? PROBE_COMBO_DESCS[i] : `命令${i + 1}`;
-    return `  命令${i + 1}: ${desc}`;
-  }).join("\n");
-
-  console.log(`[probe] 📡 下一个品牌 ${nextStep.brandCode} 的 ${ctx.irCommands?.length || 0} 条命令已发送 (进度 ${attemptedCount}/${session.steps.length} = ${progressPct}%)`);
+  console.log(`[probe] 📡 下一个品牌 ${brandCode} 的 ${probeCombos.length} 条命令参数已准备 (进度 ${attemptedCount2}/${session.steps.length} = ${progressPct}%)`);
 
   return JSON.stringify({
     success: true,
-    brand_code: nextStep.brandCode,
+    brand_code: brandCode,
     brand_display: brandDisplay,
-    command_count: ctx.irCommands?.length || 0,
-    step: attemptedCount,
+    command_count: probeCombos.length,
+    step: attemptedCount2,
     total: session.steps.length,
     progress_pct: progressPct,
-    message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${ctx.irCommands?.length || 0} 条红外命令：\n${cmdDesc}\n\n观察空调反应后说"有反应"或"没反应"。`,
+    tool_call: toolCall,
   });
 }
 
@@ -832,39 +815,8 @@ async function execControlAc(
     fan_speed: args.fan_speed || current.fan_speed,
   };
 
-  // If power is being turned on, ensure reasonable defaults
-  if (args.power === true && !current.power) {
-    // Already handled by spread above
-  }
-
-  // Generate IR waveform
-  console.log(`[control] 生成红外指令: brand=${device.brandCode} temp=${target.temperature} mode=${target.mode} fan=${target.fan_speed}`);
-  const irCommand = await generateWaveform(
-    device.brandCode,
-    target.temperature,
-    target.mode,
-    target.fan_speed
-  );
-  console.log(`[control] IR指令: ${irCommand.brand_code} | ${irCommand.raw_timing.length} pulses | ${irCommand.carrier_freq}Hz | protocol=${irCommand.protocol}`);
-
-  // Publish via MQTT (no-op in mock mode)
-  const payload = Buffer.from(
-    JSON.stringify({
-      raw_timing: irCommand.raw_timing,
-      carrier_freq: irCommand.carrier_freq,
-    })
-  );
-  await publishCommand(device.mqttTopic, payload);
-
   // Update last known state
   await updateDeviceState(device.id, target);
-
-  // Set context for frontend
-  ctx.irCommand = irCommand;
-  ctx.phase = "control";
-  ctx.session.phase = "control";
-  ctx.deviceId = device.id;
-  ctx.setupStep = undefined;
 
   // Describe what changed
   const changes: string[] = [];
@@ -877,12 +829,34 @@ async function execControlAc(
   if (args.fan_speed)
     changes.push(`风速: ${args.fan_speed}`);
 
+  const toolMessage = `📡 已发送红外指令: ${changes.join("，")} → ${device.name} (${device.brandCode})`;
+
+  // Build tool_call for client: client uses local .so to encode + emit
+  const toolCall: ToolCall = {
+    name: "control_ac",
+    args: {
+      brand_code: device.brandCode,
+      temperature: target.temperature,
+      mode: target.mode,
+      fan_speed: target.fan_speed,
+      power: target.power,
+      device_id: device.id,
+    },
+    message: toolMessage,
+  };
+
+  ctx.toolCall = toolCall;
+  ctx.phase = "control";
+  ctx.session.phase = "control";
+  ctx.deviceId = device.id;
+  ctx.setupStep = undefined;
+
+  console.log(`[control] tool_call: control_ac brand=${device.brandCode} temp=${target.temperature} mode=${target.mode} fan=${target.fan_speed} power=${target.power}`);
+
   return JSON.stringify({
     success: true,
     device_name: device.name,
-    ir_sent: true,
-    carrier_freq: irCommand.carrier_freq,
-    pulse_count: irCommand.raw_timing.length,
+    tool_call: toolCall,
     changes: changes.join("，"),
     new_state: {
       power: target.power,
@@ -891,7 +865,7 @@ async function execControlAc(
       fan_speed: target.fan_speed,
     },
     ir_disclaimer:
-      "红外指令已发送。注意：红外是单向通信，无法确认空调是否真正执行。建议在回复用户时使用'已发送...指令'而非'已设置...'。",
+      "红外指令已发送。注意：红外是单向通信，无法确认空调是否真正执行。",
   });
 }
 

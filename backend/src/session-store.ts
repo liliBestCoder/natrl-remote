@@ -16,6 +16,7 @@ export interface SessionState {
   deviceType?: string;
   room?: string;
   brandHint?: string;
+  pendingDeviceName?: string;
   probeStep?: number;
   probeTotal?: number;
   currentProbeBrand?: string;

@@ -7,7 +7,10 @@ import com.facebook.react.uimanager.ViewManager
 
 class InfraredEmitterPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(InfraredEmitterModule(reactContext))
+        return listOf(
+            InfraredEmitterModule(reactContext),
+            InfraredEncoderModule(reactContext),
+        )
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {

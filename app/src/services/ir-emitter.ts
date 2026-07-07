@@ -1,67 +1,101 @@
 /**
  * IR Emitter Service
  *
- * Emits IR signals using the phone's built-in IR blaster (Android)
- * or an external WiFi-to-IR bridge.
+ * ═══ NEW ARCHITECTURE ═══
+ * 1. Encodes IR frames locally using libnatrl_ir.so (JNI native module)
+ * 2. Emits via Android's ConsumerIrManager
  *
- * Android: Uses ConsumerIrManager via native module
- * iOS: Not supported (no IR blaster on iPhones)
- * Web: Falls back to console log + user notification
+ * The .so library contains encoders ported from IRremoteESP8266 for 17 AC brands.
+ * No IR waveform data flows through the backend anymore.
  */
-
 import { Platform, NativeModules } from "react-native";
 import { IRCommand } from "../types";
 
-// ─── Native module interface ───────────────────────────────────────
-interface InfraredNative {
+// ─── Native module interfaces ──────────────────────────────────────
+
+interface InfraredEmitterNative {
   hasIrEmitter(): Promise<boolean>;
   transmit(carrierFrequency: number, pattern: number[]): Promise<boolean>;
 }
 
-const Infrared: InfraredNative | null =
+interface InfraredEncoderNative {
+  encode(brandCode: string, temperature: number, mode: string, fanSpeed: string): Promise<{
+    carrierFreq: number;
+    pattern: number[];
+  }>;
+  getCarrierFreq(brandCode: string): Promise<number>;
+}
+
+const InfraredEmitter: InfraredEmitterNative | null =
   NativeModules?.InfraredEmitter ?? null;
+
+const InfraredEncoder: InfraredEncoderNative | null =
+  NativeModules?.InfraredEncoder ?? null;
 
 // ─── Public API ────────────────────────────────────────────────────
 
 let onIrEmitted: ((cmd: IRCommand) => void) | null = null;
 
-/** Register a callback invoked when an IR command is emitted (for UI feedback) */
 export function setOnIrEmitted(cb: ((cmd: IRCommand) => void) | null) {
   onIrEmitted = cb;
 }
 
-/**
- * Check if the device supports IR emission.
- * Returns true only on Android devices with a built-in IR blaster.
- */
 export async function hasIrBlaster(): Promise<boolean> {
   if (Platform.OS !== "android") return false;
   try {
-    if (Infrared) {
-      return await Infrared.hasIrEmitter();
-    }
+    if (InfraredEmitter) return await InfraredEmitter.hasIrEmitter();
   } catch (_) {}
   return false;
 }
 
-/**
- * Emit an IR command through the phone's IR blaster.
- *
- * @returns true if the command was successfully emitted
- */
-export async function emitIr(cmd: IRCommand): Promise<{ success: boolean; method: string }> {
-  const { carrier_freq, raw_timing } = cmd;
+export function hasEncoder(): boolean {
+  return InfraredEncoder !== null;
+}
 
+/**
+ * Encode IR locally, then emit via Android IR blaster.
+ *
+ * @param brandCode   e.g. "gree", "midea"
+ * @param temperature 16-30
+ * @param mode        "cool", "heat", "dry", "fan_only", "auto"
+ * @param fanSpeed    "auto", "low", "medium", "high"
+ */
+export async function encodeAndEmit(
+  brandCode: string,
+  temperature: number,
+  mode: string,
+  fanSpeed: string,
+): Promise<{ success: boolean; method: string }> {
   console.log(
-    `[ir-emitter] Emitting IR: ${raw_timing.length} pulses @ ${carrier_freq}Hz, brand=${cmd.brand_code}`
+    `[ir-emitter] Encode+Emit: brand=${brandCode} temp=${temperature} mode=${mode} fan=${fanSpeed}`
   );
 
-  // 1. Try native Android IR blaster
-  if (Platform.OS === "android" && Infrared) {
+  // Step 1: Encode locally using .so library
+  let carrierFreq = 38000;
+  let pattern: number[] = [];
+
+  if (InfraredEncoder) {
     try {
-      const ok = await Infrared.transmit(carrier_freq, raw_timing);
+      const encoded = await InfraredEncoder.encode(brandCode, temperature, mode, fanSpeed);
+      carrierFreq = encoded.carrierFreq;
+      pattern = encoded.pattern;
+      console.log(`[ir-emitter] ✅ Local encode: ${pattern.length} pulses @ ${carrierFreq}Hz`);
+    } catch (e: any) {
+      console.warn("[ir-emitter] ⚠️ Local encode failed:", e.message);
+      return { success: false, method: "encode_error" };
+    }
+  } else {
+    console.warn("[ir-emitter] ⚠️ No native encoder available (.so not loaded)");
+    return { success: false, method: "no_encoder" };
+  }
+
+  // Step 2: Emit via Android IR blaster
+  if (Platform.OS === "android" && InfraredEmitter) {
+    try {
+      const ok = await InfraredEmitter.transmit(carrierFreq, pattern);
       if (ok) {
         console.log("[ir-emitter] ✅ Emitted via Android IR blaster");
+        const cmd: IRCommand = { brand_code: brandCode, protocol: "NEC", carrier_freq: carrierFreq, raw_timing: pattern };
         onIrEmitted?.(cmd);
         return { success: true, method: "android_native" };
       }
@@ -70,61 +104,70 @@ export async function emitIr(cmd: IRCommand): Promise<{ success: boolean; method
     }
   }
 
-  // 2. Fallback: WiFi-to-IR bridge (e.g. Broadlink RM, Tuya)
-  //    Uncomment and configure if you have a bridge device:
-  // try {
-  //   const ok = await emitViaBridge(cmd);
-  //   if (ok) return { success: true, method: "wifi_bridge" };
-  // } catch (_) {}
-
-  // 3. Web/fallback: log the IR data for debugging
+  // Fallback: log
   console.warn(
-    "[ir-emitter] ⚠️ No IR hardware available. IR data:",
-    JSON.stringify({ carrier_freq, pattern_length: raw_timing.length, first_10: raw_timing.slice(0, 10) })
+    "[ir-emitter] ⚠️ No IR hardware. IR data:",
+    JSON.stringify({ carrier_freq: carrierFreq, pattern_length: pattern.length, first_10: pattern.slice(0, 10) })
   );
+  return { success: false, method: "no_hardware" };
+}
 
+/**
+ * Emit legacy IRCommand (for backward compat — when caller already has raw_timing).
+ */
+export async function emitIr(cmd: IRCommand): Promise<{ success: boolean; method: string }> {
+  const { carrier_freq, raw_timing } = cmd;
+  console.log(`[ir-emitter] Emitting (legacy): ${raw_timing.length} pulses @ ${carrier_freq}Hz, brand=${cmd.brand_code}`);
+
+  if (Platform.OS === "android" && InfraredEmitter) {
+    try {
+      const ok = await InfraredEmitter.transmit(carrier_freq, raw_timing);
+      if (ok) {
+        onIrEmitted?.(cmd);
+        return { success: true, method: "android_native" };
+      }
+    } catch (e: any) {
+      console.warn("[ir-emitter] Android IR failed:", e.message);
+    }
+  }
   onIrEmitted?.(cmd);
   return { success: false, method: "none" };
 }
 
 /**
- * Emit multiple IR commands sequentially with a delay between each.
- * Used for probing: one brand gets multiple commands to maximize hit chance.
- *
- * @returns array of results for each command
+ * Encode + emit a sequence of probe commands for one brand.
  */
-export async function emitIrSequence(
-  cmds: IRCommand[],
+export async function encodeAndEmitProbeSequence(
+  brandCode: string,
+  commands: Array<{ temperature: number; mode: string; fanSpeed: string; power: boolean; label: string }>,
   delayMs: number = 2000,
-  onProgress?: (index: number, total: number, cmd: IRCommand, success: boolean) => void
-): Promise<Array<{ index: number; brand: string; success: boolean; method: string }>> {
-  const results: Array<{ index: number; brand: string; success: boolean; method: string }> = [];
+  onProgress?: (index: number, total: number, label: string, success: boolean) => void
+): Promise<Array<{ index: number; label: string; success: boolean; method: string }>> {
+  const results: Array<{ index: number; label: string; success: boolean; method: string }> = [];
 
-  console.log(`[ir-emitter] 🔁 开始序列发射 ${cmds.length} 条命令, 间隔=${delayMs}ms`);
+  console.log(`[ir-emitter] 🔁 Probe sequence: ${commands.length} commands for ${brandCode}`);
 
-  for (let i = 0; i < cmds.length; i++) {
-    const cmd = cmds[i];
+  for (let i = 0; i < commands.length; i++) {
+    const cmd = commands[i];
     const idx = i + 1;
-    console.log(`[ir-emitter]   发射 ${idx}/${cmds.length}: ${cmd.brand_code} | ${cmd.raw_timing.length} pulses @ ${cmd.carrier_freq}Hz`);
+    console.log(`[ir-emitter]   Probe ${idx}/${commands.length}: ${cmd.label}`);
 
-    const result = await emitIr(cmd);
-    results.push({ index: idx, brand: cmd.brand_code, ...result });
+    const result = await encodeAndEmit(brandCode, cmd.temperature, cmd.mode, cmd.fanSpeed);
+    results.push({ index: idx, label: cmd.label, ...result });
+    onProgress?.(idx, commands.length, cmd.label, result.success);
 
-    // Notify UI of progress
-    onProgress?.(idx, cmds.length, cmd, result.success);
-
-    // Delay between commands (skip delay after last)
-    if (i < cmds.length - 1) {
+    if (i < commands.length - 1) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
 
-  console.log(`[ir-emitter] ✅ 序列发射完成: ${results.filter(r => r.success).length}/${cmds.length} 成功`);
+  const successCount = results.filter(r => r.success).length;
+  console.log(`[ir-emitter] ✅ Probe done: ${successCount}/${commands.length} succeeded`);
   return results;
 }
 
 /**
- * Build a human-readable description of the IR command for UI display.
+ * Build a human-readable description of an IR command.
  */
 export function describeIrCommand(cmd: IRCommand): string {
   return [
@@ -134,3 +177,4 @@ export function describeIrCommand(cmd: IRCommand): string {
     `脉冲: ${cmd.raw_timing.length}个`,
   ].join(" | ");
 }
+

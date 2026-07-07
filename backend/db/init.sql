@@ -20,6 +20,27 @@ CREATE TABLE IF NOT EXISTS captured_signals (
   FOREIGN KEY (matched_brand_code) REFERENCES ir_protocols(brand_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ============================================================
+-- Device table (persistent storage)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS devices (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(128) NOT NULL,
+  room VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  device_type VARCHAR(16) NOT NULL DEFAULT 'ac',
+  brand_code VARCHAR(64),
+  protocol VARCHAR(16),
+  mqtt_topic VARCHAR(256),
+  last_state JSON,
+  verified TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_user_id (user_id),
+  INDEX idx_verified (verified)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Seed data: top 6 AC brands by China market share, NEC format
 INSERT IGNORE INTO ir_protocols (brand_code, brand_name, protocol, bit_length, encoding_params) VALUES
   ('gree_nec_v1', 'Gree', 'NEC', 32, '{"header_mark": 9000, "header_space": 4500, "bit_mark": 560, "one_space": 1690, "zero_space": 560, "temp_offset": 16, "temp_lsb": 4}'),

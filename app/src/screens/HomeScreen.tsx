@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
-import { emitIr, emitIrSequence, describeIrCommand, hasIrBlaster } from "../services/ir-emitter";
+import { emitIr, encodeAndEmit, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder } from "../services/ir-emitter";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -209,7 +209,7 @@ export default function HomeScreen() {
     try {
       const result: CommandResult = await control(text);
       addAssistantMsg(result.message);
-      if (result.phase === "setup" || result.phase === "discovery" || result.phase === "registration") {
+      if (result.phase === "discovery" || result.phase === "registration") {
         setSetupStep(result.setupStep || null);
         if (result.deviceId) setSetupDeviceId(result.deviceId);
         if (result.probeBrand) setProbeBrand(result.probeBrand);
@@ -221,49 +221,60 @@ export default function HomeScreen() {
         setSetupDeviceId(null);
       }
 
-      // Emit IR command(s) via phone's IR blaster
-      if (result.irCommands && result.irCommands.length > 0) {
-        const cmdCount = result.irCommands.length;
-        const brand = result.irCommands[0].brand_code;
+      // ── Execute tool_call via local .so encoder + IR blaster ──
+      if (result.toolCall) {
+        const tc = result.toolCall;
+        console.log(`[app] tool_call: ${tc.name}`, JSON.stringify(tc.args).substring(0, 200));
 
-        // Probe command labels (match backend PROBE_COMBO_DESCS)
-        const probeLabels = [
-          "制冷26°C+自动风",
-          "制冷24°C+强风",
-          "制热26°C+自动风",
-          "制冷18°C+强风",
-          "关机",
-        ];
+        if (tc.name === "probe_brand" && tc.args.probe_commands) {
+          // Multi-command probe sequence
+          const brandCode = tc.args.brand_code || "unknown";
+          const probeCmds = tc.args.probe_commands;
+          const emitResults: string[] = [];
 
-        const emitResults: string[] = [];
+          encodeAndEmitProbeSequence(
+            brandCode,
+            probeCmds.map((c: any) => ({
+              temperature: c.temperature,
+              mode: c.mode,
+              fanSpeed: c.fan_speed,
+              power: c.power,
+              label: c.label,
+            })),
+            2000,
+            (idx, total, label, success) => {
+              const icon = success ? "📡" : "❌";
+              emitResults.push(`${icon} ${idx}/${total}: ${label}`);
+              setIrStatus(`🔍 探测: ${brandCode}\n${emitResults.slice(-3).join("\n")}`);
+            }
+          ).then((seqResults) => {
+            const successCount = seqResults.filter((r) => r.success).length;
+            const total = probeCmds.length;
+            if (successCount === total) {
+              setIrStatus(`✅ ${total}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
+            } else if (successCount > 0) {
+              setIrStatus(`⚠️ ${successCount}/${total} 条已发射 (${brandCode})\n观察空调是否有反应...`);
+            } else {
+              setIrStatus(`❌ 无红外硬件，无法发射 (${brandCode})\n请确认手机支持红外`);
+            }
+            setTimeout(() => setIrStatus(null), 10000);
+          });
 
-        emitIrSequence(result.irCommands, 2000, (idx, total, cmd, success) => {
-          const label = probeLabels[idx - 1] || `命令${idx}`;
-          const icon = success ? "📡" : "❌";
-          emitResults.push(`${icon} ${idx}/${total}: ${label}`);
-          // Show last 3 results + current status
-          const recent = emitResults.slice(-3).join("\n");
-          setIrStatus(`🔍 探测: ${brand}\n${recent}`);
-        }).then((seqResults) => {
-          const successCount = seqResults.filter((r) => r.success).length;
-          if (successCount === cmdCount) {
-            setIrStatus(`✅ ${cmdCount}条命令已全部发射 (${brand})\n观察空调是否有反应...`);
-          } else if (successCount > 0) {
-            setIrStatus(`⚠️ ${successCount}/${cmdCount} 条已发射 (${brand})\n观察空调是否有反应...`);
+        } else if (tc.name === "control_ac") {
+          // Single control command — encode locally then emit
+          const irResult = await encodeAndEmit(
+            tc.args.brand_code || "gree",
+            tc.args.temperature || 26,
+            tc.args.mode || "cool",
+            tc.args.fan_speed || "auto",
+          );
+          if (irResult.success) {
+            setIrStatus(`📡 红外已发射 (${tc.args.brand_code} ${tc.args.temperature}°C ${tc.args.mode})`);
           } else {
-            setIrStatus(`❌ 无红外硬件，无法发射 (${brand})\n请确认手机支持红外`);
+            setIrStatus(`⚠️ 发射失败 (${tc.args.brand_code}) — 方法: ${irResult.method}`);
           }
-          setTimeout(() => setIrStatus(null), 10000);
-        });
-      } else if (result.irCommand) {
-        const irResult = await emitIr(result.irCommand);
-        if (irResult.success) {
-          setIrStatus(`📡 红外已发射 (${describeIrCommand(result.irCommand)})`);
-        } else {
-          setIrStatus(`⚠️ 无红外硬件 — ${describeIrCommand(result.irCommand)}`);
+          setTimeout(() => setIrStatus(null), 6000);
         }
-        // Clear IR status after 6 seconds
-        setTimeout(() => setIrStatus(null), 6000);
       }
 
       await loadDevices();

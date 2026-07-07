@@ -1,7 +1,7 @@
 """Waveform Engine — FastAPI server.
 
-POST /generate  — lookup pre-computed IR timing from MySQL
-POST /match     — match a raw IR capture to known protocol  
+POST /generate  — encode IR frame using brand-specific encoder (IRremoteESP8266 port)
+POST /match     — match a raw IR capture to known protocol
 POST /probe     — generate probe frames for all known protocols
 GET  /health    — liveness check
 """
@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from code_db import get_ir_code, get_all_protocols, get_protocol, get_brand_probe_codes, store_captured_signal
-from waveform import estimate_tolerance
+from waveform import encode_ac_frame, get_carrier_freq, estimate_tolerance, ENCODERS
 
 app = FastAPI(title="natrl-waveform-engine")
 
@@ -35,9 +35,23 @@ class ProbeRequest(BaseModel):
 
 @app.post("/generate")
 def generate(req: GenerateRequest):
-    """Look up pre-computed IR timing from DB (sourced from IRremoteESP8266)."""
+    """Encode IR frame using brand-specific encoder (ported from IRremoteESP8266).
+
+    Falls back to DB lookup for unknown/custom brand codes.
+    """
+    # Primary: use brand-specific Python encoder (supports 17 brands)
+    if req.brand_code in ENCODERS:
+        raw_timing = encode_ac_frame(req.brand_code, req.temperature, req.mode, req.fan_speed)
+        return {
+            "brand_code": req.brand_code,
+            "protocol": "NEC",
+            "carrier_freq": get_carrier_freq(req.brand_code),
+            "raw_timing": raw_timing,
+        }
+
+    # Fallback: DB lookup for unknown/learned brand codes
     code = get_ir_code(req.brand_code, req.temperature, req.mode, req.fan_speed)
-    
+
     if code:
         return {
             "brand_code": code["brand_code"],
@@ -45,8 +59,8 @@ def generate(req: GenerateRequest):
             "carrier_freq": code["carrier_freq"],
             "raw_timing": code["raw_timing"],
         }
-    
-    # Fallback: try nearest temperature
+
+    # Last resort: try nearest temperature in DB
     for offset in [1, -1, 2, -2]:
         code = get_ir_code(req.brand_code, req.temperature + offset, req.mode, req.fan_speed)
         if code:
@@ -57,7 +71,7 @@ def generate(req: GenerateRequest):
                 "raw_timing": code["raw_timing"],
                 "warning": f"Exact temperature {req.temperature} not found, using {req.temperature + offset}"
             }
-    
+
     raise HTTPException(
         status_code=404, detail=f"No IR code for {req.brand_code} t={req.temperature} {req.mode} {req.fan_speed}"
     )
