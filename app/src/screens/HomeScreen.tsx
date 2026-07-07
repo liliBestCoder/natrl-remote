@@ -8,7 +8,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
 import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC } from "../services/ir-emitter";
-import Voice, { SpeechResultsEvent } from "@react-native-voice/voice";
+import { ExpoSpeechRecognitionModule } from "expo-speech-recognition";
+import type { ExpoSpeechRecognitionResultEvent, ExpoSpeechRecognitionErrorEvent } from "expo-speech-recognition";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -102,39 +103,37 @@ export default function HomeScreen() {
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       setVoiceSupported(!!SR);
     } else {
-      // Android/iOS: @react-native-voice/voice is always available
       setVoiceSupported(true);
 
-      Voice.onSpeechStart = () => {
-        console.log("[voice] native speech started");
-        setListening(true);
-      };
-      Voice.onSpeechEnd = () => {
-        console.log("[voice] native speech ended");
-        setListening(false);
-      };
-      Voice.onSpeechResults = (e: SpeechResultsEvent) => {
-        if (e.value && e.value.length > 0) {
-          const text = e.value[0];
+      const onResult = (e: ExpoSpeechRecognitionResultEvent) => {
+        if (e.results?.[0]?.transcript) {
+          const text = e.results[0].transcript;
           console.log("[voice] native result:", text);
           setListening(false);
-          handleSend(text);
+          if (e.isFinal || !e.isFinal) { // always send, but only once
+            handleSend(text);
+          }
         }
       };
-      Voice.onSpeechError = (e: any) => {
-        console.log("[voice] native error:", e.error);
+      const onError = (e: ExpoSpeechRecognitionErrorEvent) => {
+        console.log("[voice] native error:", e.message);
         setListening(false);
-        if (e.error?.code === "permission" || e.error?.message?.includes("permission")) {
+        if (e.message?.includes("permission") || e.message?.includes("not-allowed")) {
           setVoiceBlocked(true);
         }
       };
-    }
+      const onStart = () => setListening(true);
+      const onEnd = () => setListening(false);
 
-    return () => {
-      if (Platform.OS !== "web") {
-        Voice.destroy().then(Voice.removeAllListeners);
-      }
-    };
+      ExpoSpeechRecognitionModule.addListener("result", onResult);
+      ExpoSpeechRecognitionModule.addListener("error", onError);
+      ExpoSpeechRecognitionModule.addListener("audiostart", onStart);
+      ExpoSpeechRecognitionModule.addListener("end", onEnd);
+
+      return () => {
+        ExpoSpeechRecognitionModule.removeListeners(1);
+      };
+    }
   }, []);
 
   // Check IR blaster on mount
@@ -221,10 +220,19 @@ export default function HomeScreen() {
         setListening(false);
       }
     } else {
-      // ── Native: @react-native-voice/voice ──
+      // ── Native: expo-speech-recognition ──
       try {
-        await Voice.start("zh-CN");
-        // onSpeechStart callback will set listening=true
+        const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (!perm.granted) {
+          setVoiceBlocked(true);
+          addAssistantMsg("麦克风权限未授权，请在系统设置中允许。");
+          return;
+        }
+        ExpoSpeechRecognitionModule.start({
+          lang: "zh-CN",
+          interimResults: false,
+          continuous: false,
+        });
       } catch (e: any) {
         setListening(false);
         console.log("[voice] native start error:", e);
@@ -237,7 +245,7 @@ export default function HomeScreen() {
     if (Platform.OS === "web") {
       if (recognitionRef.current) recognitionRef.current.abort();
     } else {
-      Voice.stop();
+      ExpoSpeechRecognitionModule.stop();
     }
     setListening(false);
   }, []);
