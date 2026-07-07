@@ -9,9 +9,7 @@ let pool: mysql.Pool | null = null;
 function getPool(): mysql.Pool {
   if (!pool) {
     pool = mysql.createPool({
-      host: "127.0.0.1",
-      user: "root",
-      database: "natrl",
+      uri: process.env.DATABASE_URL || "mysql://natrl:natrl_dev@127.0.0.1:3306/natrl",
     });
   }
   return pool;
