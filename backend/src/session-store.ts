@@ -84,16 +84,22 @@ export function buildStateContext(session: SessionState): string {
   switch (session.phase) {
     case "discovery": {
       lines.push("[当前阶段: 阶段1 — 设备识别与品牌探测]");
-      if (session.deviceType && session.room) {
-        const typeName = session.deviceType === "ac" ? "空调" : session.deviceType;
-        lines.push(`已识别: ${typeName}, 房间: ${session.room}`);
-      }
-      if (session.brandHint) {
-        lines.push(`用户提到品牌: ${session.brandHint} → 应立即调用 probe_brand`);
-      }
       if (session.probingActive) {
-        lines.push(`探测中: 第${session.probeStep}/${session.probeTotal}个 (${session.currentProbeBrand || "?"})`);
-        lines.push("⛔ 当前唯一合法操作: respond_probe。收到用户'有反应'或'没反应'后立即调用 respond_probe，绝对禁止调用其他函数！");
+        // Probing is live — override everything. Only respond_probe is allowed.
+        lines.push(`⛔ 正在探测品牌: ${session.currentProbeBrand || "?"} (第${session.probeStep}/${session.probeTotal}个)`);
+        lines.push("⛔ 唯一合法操作: respond_probe(reacted:true/false)");
+        lines.push(`⛔ 用户说"有反应"/"开了"/"滴了" → 立即调用 respond_probe(reacted:true)`);
+        lines.push(`⛔ 用户说"没反应"/"没动静" → 立即调用 respond_probe(reacted:false)`);
+        lines.push("⛔ 绝对禁止调用 probe_brand / register_device / discover_device！");
+        lines.push("⛔ 绝对禁止只用文字回复！必须调用 respond_probe！");
+      } else {
+        if (session.deviceType && session.room) {
+          const typeName = session.deviceType === "ac" ? "空调" : session.deviceType;
+          lines.push(`已识别: ${typeName}, 房间: ${session.room}`);
+        }
+        if (session.brandHint) {
+          lines.push(`用户提到品牌: ${session.brandHint} → 应立即调用 probe_brand`);
+        }
       }
       if (session.matchedBrand) {
         lines.push(`品牌匹配成功: ${session.matchedBrand} → 进入阶段2`);
