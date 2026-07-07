@@ -405,7 +405,7 @@ export default function HomeScreen() {
   // === RENDER: Setup ===
   if (setupStep) {
     return (
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "padding"}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" enabled={Platform.OS === "ios"}>
       <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
         <Text style={styles.hdr}>Natrl Remote</Text>
         <View style={styles.setupCard}>
@@ -465,7 +465,7 @@ export default function HomeScreen() {
 
   // === RENDER: Main ===
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "padding"}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" enabled={Platform.OS === "ios"}>
     <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
       <Text style={styles.hdr}>Natrl Remote</Text>
       {acDevice ? (
@@ -572,7 +572,9 @@ export default function HomeScreen() {
           {voiceBlocked && (
             <View style={styles.voiceNotice}>
               <Text style={styles.voiceNoticeText}>
-                ⚠️ 麦克风已阻止 — 点地址栏🔒→允许→刷新
+                ⚠️ 麦克风已阻止 — {Platform.OS === "web"
+                  ? "点地址栏🔒→允许→刷新"
+                  : "请在系统设置→应用权限中允许麦克风权限"}
               </Text>
             </View>
           )}
