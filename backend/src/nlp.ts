@@ -149,7 +149,7 @@ export async function processInput(
 
         const toolResult = await executeToolCall(fnName, fnArgs, ctx);
 
-        console.log(`[nlp] tool_result: ${toolResult.substring(0, 200)}`);
+        console.log(`[nlp] tool_result: ${toolResult}`);
 
         messages.push({
           role: "tool",
@@ -193,7 +193,7 @@ export async function processInput(
 
   if (ctx.toolCall) {
     result.toolCall = ctx.toolCall;
-    console.log(`[nlp] 返回 tool_call(${ctx.toolCall.name}) 到前端: ${JSON.stringify(ctx.toolCall.args).substring(0, 150)}`);
+    console.log(`[nlp] 返回 tool_call(${ctx.toolCall.name}) 到前端: ${JSON.stringify(ctx.toolCall.args)}`);
   }
 
   if (ctx.phase === "discovery" || ctx.phase === "registration") {

@@ -8,9 +8,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_NDK_HOME: ${{ github.workspace }}/android-sdk/ndk/26.1.10909125
+
     steps:
-      - name: Checkout
+      - name: Checkout (with IRremoteESP8266 submodule)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -25,21 +30,42 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK + NDK + CMake
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125'
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1'
 
       - name: Install dependencies
         working-directory: app
         run: npm ci
 
-      - name: Build APK
+      - name: Build APK (Gradle + CMake → .so)
         working-directory: app/android
         run: ./gradlew assembleRelease -Pandroid.kotlinVersion=1.9.25
+
+      - name: Verify .so libraries
+        run: |
+          echo "=== Checking .so files in APK ==="
+          find app/android/app/build -name "*.so" -exec ls -lh {} \; 2>/dev/null || echo "WARNING: No .so files found!"
+          echo "=== NDK ABIs ==="
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            so="app/android/app/build/intermediates/stripped_native_libs/release/out/lib/$abi/libnatrl_ir.so"
+            if [ -f "$so" ]; then
+              echo "✅ $abi: $(ls -lh "$so" | awk '{print $5}')"
+            else
+              echo "❌ $abi: NOT FOUND"
+            fi
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: natrl-remote-apk
           path: app/android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload .so files (for inspection)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: natrl-ir-so
+          path: app/android/app/build/intermediates/stripped_native_libs/release/out/lib/**/libnatrl_ir.so

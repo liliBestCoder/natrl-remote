@@ -31,22 +31,26 @@ mkdir -p "$PID_DIR" "$LOG_DIR"
 # ─── Stop ──────────────────────────────────────────────────
 do_stop() {
     log "Stopping all services..."
-    for pidfile in "$PID_DIR"/*.pid; do
-        [ -f "$pidfile" ] || continue
-        local name=$(basename "$pidfile" .pid)
-        local pid=$(cat "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
-            log "  Stopped $name (pid $pid)"
-        fi
-        rm -f "$pidfile"
+
+    # Stop by process name (not port)
+    for name in "mysqld" "redis-server" "uvicorn" "tsx"; do
+        for pid in $(pgrep -f "$name" 2>/dev/null); do
+            if [ -n "$pid" ]; then
+                kill "$pid" 2>/dev/null && log "  Stopped $name (pid $pid)"
+            fi
+        done
     done
-    # Clean up any leftover processes on our ports
+
+    # Clean up pid files
+    rm -f "$PID_DIR"/*.pid
+
+    # Final cleanup: kill any remaining on our ports as fallback
     for port in $BACKEND_PORT $WAVEFORM_PORT; do
         for pid in $(lsof -ti:$port 2>/dev/null); do
             kill "$pid" 2>/dev/null && log "  Killed leftover on port $port (pid $pid)"
         done
     done
+
     log "All services stopped."
 }
 

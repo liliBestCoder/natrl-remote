@@ -14,6 +14,7 @@ import { processInput } from "../nlp";
 export const controlRouter = Router();
 
 controlRouter.post("/", async (req: Request, res: Response) => {
+  const startTime = Date.now();
   try {
     const { input, userId } = req.body as { input: string; userId: string };
 
@@ -22,7 +23,19 @@ controlRouter.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    console.log(`\n[api] ═══════════ 收到请求 ═══════════`);
+    console.log(`[api] ← 用户: ${input}`);
+
     const result = await processInput(input, userId);
+
+    const elapsed = Date.now() - startTime;
+    const tc = result.toolCall;
+    console.log(`[api] → 回复: ${result.message}`);
+    if (tc) {
+      console.log(`[api] → toolCall: ${JSON.stringify(tc)}`);
+    }
+    console.log(`[api] → ${elapsed}ms | phase=${result.phase}`);
+    console.log(`[api] ═══════════════════════════════\n`);
 
     res.json({
       success: true,
@@ -36,7 +49,8 @@ controlRouter.post("/", async (req: Request, res: Response) => {
       probeTotal: result.probeTotal,
     });
   } catch (err: any) {
-    console.error("[control] error:", err);
+    const elapsed = Date.now() - startTime;
+    console.error(`[api] ✗ 错误 | ${elapsed}ms | ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
