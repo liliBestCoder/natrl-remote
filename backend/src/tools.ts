@@ -569,7 +569,7 @@ async function execRespondProbe(
     session.complete = true;
     probeSessions.delete(deviceId);
 
-    const now = new Date().toISOString();
+    const now = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z/, "");
     const room = ctx.session.room || "卧室";
     const deviceTypeStr = (ctx.session.deviceType as Device["deviceType"]) || "ac";
     const typeWord = deviceTypeStr === "tv" ? "电视" : "空调";
