@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
 import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC } from "../services/ir-emitter";
+import Voice, { SpeechResultsEvent } from "@react-native-voice/voice";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -95,29 +96,45 @@ export default function HomeScreen() {
     setTimeout(() => setNecResult(null), 6000);
   };
 
+  // ── Voice Recognition setup ──
   useEffect(() => {
-    if (Platform.OS === "web" && typeof window !== "undefined") {
+    if (Platform.OS === "web") {
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      const hasSR = !!SR;
-      setVoiceSupported(hasSR);
-      console.log("[voice] supported:", hasSR);
+      setVoiceSupported(!!SR);
+    } else {
+      // Android/iOS: @react-native-voice/voice is always available
+      setVoiceSupported(true);
 
-      // Check if permission already denied
-      if (hasSR && navigator.permissions) {
-        navigator.permissions.query({ name: "microphone" as PermissionName })
-          .then((status) => {
-            if (status.state === "denied") {
-              setVoiceBlocked(true);
-              console.log("[voice] permission already denied");
-            }
-            status.onchange = () => {
-              if (status.state === "denied") setVoiceBlocked(true);
-              else setVoiceBlocked(false);
-            };
-          })
-          .catch(() => {});
-      }
+      Voice.onSpeechStart = () => {
+        console.log("[voice] native speech started");
+        setListening(true);
+      };
+      Voice.onSpeechEnd = () => {
+        console.log("[voice] native speech ended");
+        setListening(false);
+      };
+      Voice.onSpeechResults = (e: SpeechResultsEvent) => {
+        if (e.value && e.value.length > 0) {
+          const text = e.value[0];
+          console.log("[voice] native result:", text);
+          setListening(false);
+          handleSend(text);
+        }
+      };
+      Voice.onSpeechError = (e: any) => {
+        console.log("[voice] native error:", e.error);
+        setListening(false);
+        if (e.error?.code === "permission" || e.error?.message?.includes("permission")) {
+          setVoiceBlocked(true);
+        }
+      };
     }
+
+    return () => {
+      if (Platform.OS !== "web") {
+        Voice.destroy().then(Voice.removeAllListeners);
+      }
+    };
   }, []);
 
   // Check IR blaster on mount
@@ -162,71 +179,65 @@ export default function HomeScreen() {
 
   // === VOICE: Hold-to-talk ===
   const startVoice = useCallback(async () => {
-    // Check browser support
     if (!voiceSupported) {
       setListening(false);
-      addAssistantMsg("当前浏览器不支持语音识别，请使用 Chrome 浏览器。");
+      addAssistantMsg("当前不支持语音识别。");
       return;
     }
 
-    try {
-      // Step 1: explicitly request microphone permission (must be in user gesture chain)
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Stop tracks immediately — we only needed the permission grant
-      stream.getTracks().forEach((t) => t.stop());
-
-    } catch (permErr: any) {
-      setListening(false);
-      console.log("[voice] mic permission err:", permErr.name, permErr.message);
-      if (permErr.name === "NotAllowedError" || permErr.name === "PermissionDeniedError") {
-        setVoiceBlocked(true);
-        addAssistantMsg("麦克风权限已被阻止。请点击地址栏左侧锁图标 → 麦克风设为「允许」→ 刷新页面。");
-      } else if (permErr.name === "NotFoundError") {
-        addAssistantMsg("未检测到麦克风设备，请检查设备连接。");
-      } else {
-        addAssistantMsg(`麦克风错误: ${permErr.message}`);
-      }
-      return;
-    }
-
-    // Step 2: start speech recognition
-    try {
-      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (recognitionRef.current) { recognitionRef.current.abort(); }
-      const rec = new SR();
-      rec.lang = "zh-CN";
-      rec.interimResults = false;
-      rec.continuous = false;
-      rec.onresult = (e: any) => {
-        const text = e.results[0][0].transcript;
-        console.log("[voice] ok:", text);
+    if (Platform.OS === "web") {
+      // ── Web Speech API ──
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+      } catch (permErr: any) {
         setListening(false);
-        handleSend(text);
-      };
-      rec.onerror = (e: any) => {
-        console.log("[voice] sr err:", e.error);
-        setListening(false);
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        if (permErr.name === "NotAllowedError") {
           setVoiceBlocked(true);
-          addAssistantMsg("语音服务被阻止。请点击地址栏锁图标 → 麦克风设为「允许」→ 刷新。");
-        } else if (e.error !== "aborted") {
-          addAssistantMsg(`语音错误: ${e.error}`);
+          addAssistantMsg("麦克风已被阻止。点地址栏🔒→允许→刷新。");
         }
-      };
-      rec.onend = () => { setListening(false); };
-      rec.onstart = () => { setListening(true); };
-      recognitionRef.current = rec;
-      rec.start();
-    } catch (srErr: any) {
-      setListening(false);
-      console.log("[voice] sr start err:", srErr);
-      addAssistantMsg(`无法启动语音识别: ${srErr.message}`);
+        return;
+      }
+      try {
+        const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (recognitionRef.current) recognitionRef.current.abort();
+        const rec = new SR();
+        rec.lang = "zh-CN";
+        rec.interimResults = false;
+        rec.continuous = false;
+        rec.onresult = (e: any) => {
+          setListening(false);
+          handleSend(e.results[0][0].transcript);
+        };
+        rec.onerror = (e: any) => {
+          setListening(false);
+          if (e.error === "not-allowed") setVoiceBlocked(true);
+        };
+        rec.onstart = () => setListening(true);
+        rec.onend = () => setListening(false);
+        recognitionRef.current = rec;
+        rec.start();
+      } catch (e: any) {
+        setListening(false);
+      }
+    } else {
+      // ── Native: @react-native-voice/voice ──
+      try {
+        await Voice.start("zh-CN");
+        // onSpeechStart callback will set listening=true
+      } catch (e: any) {
+        setListening(false);
+        console.log("[voice] native start error:", e);
+        addAssistantMsg(`语音启动失败: ${e.message}`);
+      }
     }
   }, [voiceSupported, addAssistantMsg]);
 
   const stopVoice = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.abort();
+    if (Platform.OS === "web") {
+      if (recognitionRef.current) recognitionRef.current.abort();
+    } else {
+      Voice.stop();
     }
     setListening(false);
   }, []);
