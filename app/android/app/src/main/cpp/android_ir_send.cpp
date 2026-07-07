@@ -1,6 +1,5 @@
-// Enable virtual methods in IRsend (guarded by TEST || UNIT_TEST in IRsend.h)
-// Use TEST not UNIT_TEST — UNIT_TEST pulls in IRsend_test.h which we don't have
-#define TEST 1
+// Enable virtual methods + skip ESP hw code in IRrecv.cpp
+#define UNIT_TEST 1
 
 #include "android_ir_send.h"
 #include "arduino_stub/Arduino.h"

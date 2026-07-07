@@ -4,11 +4,12 @@ project("natrl_ir")
 # Path to real IRremoteESP8266 source (git submodule)
 set(IR_ESP_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../firmware/IRremoteESP8266/src")
 
-# Include paths: our Arduino stub first (shadows real Arduino.h), then IRremoteESP8266 src
+# Include paths: Arduino stub first, then IRremoteESP8266 src + test/
 include_directories(
     "${CMAKE_CURRENT_SOURCE_DIR}/arduino_stub"
     "${CMAKE_CURRENT_SOURCE_DIR}/arduino_stub/driver"
     "${IR_ESP_SRC}"
+    "${IR_ESP_SRC}/../test"
 )
 
 # Compile ALL .cpp files from IRremoteESP8266 src/
@@ -27,4 +28,4 @@ add_library(natrl_ir SHARED
 )
 
 target_compile_options(natrl_ir PRIVATE -Wall -O2 -fPIC -fexceptions -frtti -std=c++17)
-target_compile_definitions(natrl_ir PRIVATE TEST ARDUINO)
+target_compile_definitions(natrl_ir PRIVATE UNIT_TEST ARDUINO)
