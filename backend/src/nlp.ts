@@ -46,6 +46,8 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能空调语音助手。通过红
 3. 注册成功 → 进入阶段3
 
 ### 阶段3 — 日常使用
+⛔ 阶段3的核心规则：用户的任何操作指令**必须**调用 control_ac 或 control_tv 函数来发射红外。绝对禁止只用文字回复（如"好的，已打开"）而不调用函数！
+
 **空调:**
 - "打开/关掉" → control_ac(power:true/false)
 - "调到26度" → control_ac(temperature:26)

@@ -111,7 +111,13 @@ export function buildStateContext(session: SessionState): string {
 
     case "control": {
       lines.push("[当前阶段: 阶段3 — 日常使用]");
-      lines.push("设备已就绪，等待控制指令。可操作: 开关/调温/模式/风速/查询");
+      lines.push("设备已就绪。收到用户指令时必须调用对应函数：");
+      if (session.deviceType === "tv") {
+        lines.push("  电视: power/vol_up/vol_down/ch_up/ch_down/mute/input/up/down/left/right/ok/menu/back/exit/home/info");
+      } else {
+        lines.push("  空调: control_ac(power:/temperature:/mode:/fan_speed:)");
+      }
+      lines.push("⛔ 禁止只用文字回复，必须调用函数发射红外！");
       break;
     }
   }
