@@ -107,30 +107,30 @@ export default function HomeScreen() {
     } else {
       setVoiceSupported(true);
 
+      // ═══ listening state is 100% controlled by press gesture ═══
+      // Only handlePressIn / handlePressOut / onResult(isFinal) change it.
+      // All other events (audiostart, end, error) NEVER touch listening.
+      // This eliminates the flicker loop completely.
       const onResult = (e: ExpoSpeechRecognitionResultEvent) => {
         if (e.results?.[0]?.transcript) {
           const text = e.results[0].transcript;
           console.log("[voice] native result:", text, "isFinal:", e.isFinal);
           if (e.isFinal) {
-            pressingRef.current = false;
-            setListening(false);
             ExpoSpeechRecognitionModule.stop();
             handleSend(text);
+            // handleSend will trigger handlePressOut → setListening(false)
           }
         }
       };
       const onError = (e: ExpoSpeechRecognitionErrorEvent) => {
         console.log("[voice] native error:", e.message);
-        pressingRef.current = false;
-        setListening(false);
         if (e.message?.includes("permission") || e.message?.includes("not-allowed")) {
           setVoiceBlocked(true);
         }
+        // Do NOT set listening=false here — gesture controls it
       };
-      // Do NOT set listening based on audiostart/end — those events are unreliable
-      // and cause flicker. listening state is controlled solely by press gesture.
-      const onStart = () => { console.log("[voice] audiostart"); };
-      const onEnd = () => { console.log("[voice] end event (ignored for state)"); };
+      const onStart = () => { /* listening state is gesture-driven */ };
+      const onEnd = () => { /* listening state is gesture-driven */ };
 
       ExpoSpeechRecognitionModule.addListener("result", onResult);
       ExpoSpeechRecognitionModule.addListener("error", onError);
@@ -184,9 +184,10 @@ export default function HomeScreen() {
   useEffect(() => { loadDevices(true); }, [loadDevices]);
 
   // === VOICE: Hold-to-talk ===
+  // listening state is 100% controlled by handlePressIn / handlePressOut.
+  // This function only starts the recognizer — never changes listening.
   const startVoice = useCallback(async () => {
     if (!voiceSupported) {
-      setListening(false);
       addAssistantMsg("当前不支持语音识别。");
       return;
     }
@@ -197,7 +198,6 @@ export default function HomeScreen() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach((t) => t.stop());
       } catch (permErr: any) {
-        setListening(false);
         if (permErr.name === "NotAllowedError") {
           setVoiceBlocked(true);
           addAssistantMsg("麦克风已被阻止。点地址栏🔒→允许→刷新。");
@@ -212,20 +212,14 @@ export default function HomeScreen() {
         rec.interimResults = false;
         rec.continuous = false;
         rec.onresult = (e: any) => {
-          setListening(false);
           handleSend(e.results[0][0].transcript);
         };
         rec.onerror = (e: any) => {
-          setListening(false);
           if (e.error === "not-allowed") setVoiceBlocked(true);
         };
-        rec.onstart = () => setListening(true);
-        rec.onend = () => setListening(false);
         recognitionRef.current = rec;
         rec.start();
-      } catch (e: any) {
-        setListening(false);
-      }
+      } catch (_e: any) {}
     } else {
       // ── Native: expo-speech-recognition ──
       try {
@@ -241,9 +235,7 @@ export default function HomeScreen() {
           continuous: false,
         });
       } catch (e: any) {
-        setListening(false);
         console.log("[voice] native start error:", e);
-        addAssistantMsg(`语音启动失败: ${e.message}`);
       }
     }
   }, [voiceSupported, addAssistantMsg]);
@@ -252,9 +244,8 @@ export default function HomeScreen() {
     if (Platform.OS === "web") {
       if (recognitionRef.current) recognitionRef.current.abort();
     } else {
-      ExpoSpeechRecognitionModule.stop();
+      try { ExpoSpeechRecognitionModule.stop(); } catch (_e) {}
     }
-    setListening(false);
   }, []);
 
   // Hold-to-talk handlers
