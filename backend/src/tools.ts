@@ -376,25 +376,56 @@ async function execProbeBrand(
 
   // Use session data (device not yet created in DB)
   const room = ctx.session.room || "卧室";
-  const devName = ctx.session.pendingDeviceName || "空调";
+
+  // ── Auto-detect deviceType from brand_hint ──
+  // If the LLM skipped discover_device, session.deviceType may be wrong or unset.
+  // Use brand_hint to cross-check against the database.
+  const hint = args.brand_hint?.trim();
+  let effectiveDeviceType: "ac" | "tv" = (ctx.session.deviceType === "tv" ? "tv" : "ac");
+
+  if (hint) {
+    const acMatches = await matchBrandHint(hint, "ac");
+    const tvMatches = await matchBrandHint(hint, "tv");
+
+    if (acMatches.length > 0 && tvMatches.length === 0) {
+      // Hint only matches AC brands → force AC
+      if (effectiveDeviceType !== "ac") {
+        console.log(`[probe] 🔄 品牌"${hint}"仅匹配AC，设备类型从 ${effectiveDeviceType} 纠正为 ac`);
+        effectiveDeviceType = "ac";
+      }
+    } else if (tvMatches.length > 0 && acMatches.length === 0) {
+      // Hint only matches TV brands → force TV
+      if (effectiveDeviceType !== "tv") {
+        console.log(`[probe] 🔄 品牌"${hint}"仅匹配TV，设备类型从 ${effectiveDeviceType} 纠正为 tv`);
+        effectiveDeviceType = "tv";
+      }
+    }
+    // If matches both or neither, keep current deviceType
+  }
+
+  // Persist corrected deviceType back to session
+  ctx.session.deviceType = effectiveDeviceType;
+  const devName = ctx.session.pendingDeviceName
+    || (effectiveDeviceType === "tv" ? "电视" : "空调");
 
   // Get all brand codes to probe
-  const allBrands = await getProbeOrder(ctx.session.deviceType === "tv" ? "tv" : "ac");
+  const allBrands = await getProbeOrder(effectiveDeviceType);
 
   // Reorder based on brand hint
   let orderedBrands = allBrands;
-  const hint = args.brand_hint?.trim();
   if (hint) {
     ctx.session.brandHint = hint;
-    const matchedCodes = await matchBrandHint(hint, ctx.session.deviceType as any);
-    console.log(`[probe] 用户提示品牌: "${hint}" → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
+    const matchedCodes = await matchBrandHint(hint, effectiveDeviceType);
+    console.log(`[probe] 用户提示品牌: "${hint}" (deviceType=${effectiveDeviceType}) → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
     if (matchedCodes.length > 0) {
       orderedBrands = [...matchedCodes.filter(b => allBrands.includes(b)), ...allBrands.filter(b => !matchedCodes.includes(b))];
       console.log(`[probe] 重排: ${orderedBrands.join(" → ")}`);
+    } else {
+      console.log(`[probe] ⚠️ 品牌"${hint}"不在${effectiveDeviceType}库中，按默认顺序探测`);
     }
   } else {
     ctx.session.brandHint = undefined;
-    console.log(`[probe] 无品牌提示，默认顺序探测`);
+    console.log(`[probe] 无品牌提示，默认顺序探测 (deviceType=${effectiveDeviceType})`);
   }
 
   // ── Build probe session (one step per brand) ──
@@ -416,7 +447,7 @@ async function execProbeBrand(
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
-  const isTV = ctx.session.deviceType === "tv";
+  const isTV = effectiveDeviceType === "tv";
 
   // Probe commands (params only, client encodes with .so)
   const probeCombos = isTV
