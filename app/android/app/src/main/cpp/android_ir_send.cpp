@@ -30,9 +30,11 @@
 class CaptureIRsend : public IRsend {
 public:
     std::vector<uint32_t> timing;
+    decode_results capture;  // needed by IRac UNIT_TEST macro
 
     CaptureIRsend() : IRsend(0, false, true), _on(false) {
         timing.reserve(2048);
+        capture.decode_type = UNKNOWN;
     }
 
     void _delayMicroseconds(uint32_t usec) override {
@@ -41,6 +43,9 @@ public:
 
     void ledOn()  override { _on = true; }
     void ledOff() override { _on = false; }
+
+    // Stub for IRac UNIT_TEST macro (never called: _utReceiver is always nullptr)
+    void makeDecodeResult(uint16_t = 0) {}
 
 private:
     bool _on;
