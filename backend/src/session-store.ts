@@ -93,7 +93,7 @@ export function buildStateContext(session: SessionState): string {
       }
       if (session.probingActive) {
         lines.push(`探测中: 第${session.probeStep}/${session.probeTotal}个 (${session.currentProbeBrand || "?"})`);
-        lines.push("等待用户反馈'有反应'或'没反应'");
+        lines.push("⛔ 当前唯一合法操作: respond_probe。收到用户'有反应'或'没反应'后立即调用 respond_probe，绝对禁止调用其他函数！");
       }
       if (session.matchedBrand) {
         lines.push(`品牌匹配成功: ${session.matchedBrand} → 进入阶段2`);

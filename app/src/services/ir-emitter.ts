@@ -11,6 +11,75 @@
 import { Platform, NativeModules } from "react-native";
 import { IRCommand } from "../types";
 
+// ─── Debug: Raw NEC transmitter (no native code needed) ──────────
+
+/**
+ * Generate NEC IR timing pattern from 8-bit address and command.
+ * Used for debug / manual code entry.
+ */
+export function buildNecPattern(address: number, command: number): number[] {
+  const HDR_MARK = 9000;
+  const HDR_SPACE = 4500;
+  const BIT_MARK = 560;
+  const ONE_SPACE = 1690;
+  const ZERO_SPACE = 560;
+  const GAP = 40000;
+
+  const pattern: number[] = [HDR_MARK, HDR_SPACE];
+
+  // Build 32-bit NEC frame: addr(8) + ~addr(8) + cmd(8) + ~cmd(8)
+  const bytes = [
+    address & 0xFF,
+    (~address) & 0xFF,
+    command & 0xFF,
+    (~command) & 0xFF,
+  ];
+
+  for (const byte of bytes) {
+    // NEC sends each byte LSB first
+    for (let bit = 0; bit < 8; bit++) {
+      pattern.push(BIT_MARK);
+      pattern.push((byte >> bit) & 1 ? ONE_SPACE : ZERO_SPACE);
+    }
+  }
+
+  // Stop bit
+  pattern.push(BIT_MARK);
+  pattern.push(GAP);
+
+  return pattern;
+}
+
+/**
+ * Transmit raw NEC code (address + command) via IR blaster.
+ * Debug tool for testing unknown TV codes.
+ */
+export async function transmitRawNEC(
+  address: number,
+  command: number,
+): Promise<{ success: boolean; method: string }> {
+  const carrierFreq = 38000;
+  const pattern = buildNecPattern(address, command);
+
+  console.log(
+    `[ir-emitter] Raw NEC: addr=0x${address.toString(16).toUpperCase()} cmd=0x${command.toString(16).toUpperCase()}  pulses=${pattern.length}`
+  );
+
+  if (Platform.OS === "android" && InfraredEmitter) {
+    try {
+      const ok = await InfraredEmitter.transmit(carrierFreq, pattern);
+      if (ok) {
+        return { success: true, method: "android_raw_nec" };
+      }
+    } catch (e: any) {
+      return { success: false, method: "encode_error" };
+    }
+  }
+  return { success: false, method: "no_hardware" };
+}
+
+// ─── Native module interfaces ──────────────────────────────────────
+
 // ─── Native module interfaces ──────────────────────────────────────
 
 interface InfraredEmitterNative {

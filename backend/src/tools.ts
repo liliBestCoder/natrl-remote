@@ -352,6 +352,11 @@ async function execDiscoverDevice(
   ctx.session.matchedBrand = null as any;
   ctx.session.brandHint = undefined;
 
+  // Clean up any stale probe sessions for this user
+  for (const [id, s] of probeSessions.entries()) {
+    if (s.complete || s.deviceId === pendingId) probeSessions.delete(id);
+  }
+
   return JSON.stringify({
     success: true,
     device_id: pendingId,
@@ -582,8 +587,8 @@ async function execRespondProbe(
     const attemptedCount = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
     console.log(`[probe] ✅ 匹配成功! 品牌: ${currentStep.brandCode} (第 ${attemptedCount}/${session.steps.length} 个尝试) → 设备已创建并验证`);
 
-    ctx.phase = "registration";
-    ctx.session.phase = "registration";
+    ctx.phase = "control";
+    ctx.session.phase = "control";
     ctx.session.matchedBrand = currentStep.brandCode;
     ctx.session.probingActive = false;
     ctx.setupStep = undefined;
@@ -595,9 +600,10 @@ async function execRespondProbe(
       matched_brand_display: brandName,
       attempts: attemptedCount,
       total: session.steps.length,
-      status: "device_registered",
+      status: "device_ready",
       device_id: deviceId,
-      message: `🎉 探测成功！已识别为 **${brandName}**，设备「${devName}」已自动注册。你可以直接说"打开空调"来控制。`,
+      message: `🎉 探测成功！已识别为 **${brandName}**，设备「${devName}」已就绪。你可以直接说"打开${ctx.session.deviceType === 'tv' ? '电视' : '空调'}"来控制。`,
+      hint: "设备已自动创建并验证。注意：不要调用 register_device，设备已就绪可直接控制。",
     });
   }
 
@@ -707,7 +713,7 @@ async function execVerifyDevice(
   const unverified = devices.filter((d) => !d.verified && d.brandCode);
   if (unverified.length === 0) {
     return JSON.stringify({
-      error: "没有待验证的设备。请先完成品牌探测。",
+      error: "没有待验证的设备。必须先调用 respond_probe 响应探测结果，成功后才能验证。",
     });
   }
 
@@ -760,7 +766,7 @@ async function execRegisterDevice(
   const pending = devices.filter((d) => !d.verified && d.brandCode);
   if (pending.length === 0) {
     return JSON.stringify({
-      error: "没有待注册的设备。请先完成品牌探测。",
+      error: "没有待注册的设备。必须先调用 respond_probe 响应探测结果。探测成功后设备会自动创建，无需手动注册。",
     });
   }
 

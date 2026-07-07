@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
-import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder } from "../services/ir-emitter";
+import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC } from "../services/ir-emitter";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -48,6 +48,29 @@ export default function HomeScreen() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
   const recognitionRef = useRef<any>(null);
+
+  // Debug panel: raw NEC transmitter
+  const [showDebug, setShowDebug] = useState(false);
+  const [necAddr, setNecAddr] = useState("");
+  const [necCmd, setNecCmd] = useState("");
+  const [necResult, setNecResult] = useState<string | null>(null);
+
+  const handleSendNEC = async () => {
+    const addr = parseInt(necAddr.trim(), 16);
+    const cmd = parseInt(necCmd.trim(), 16);
+    if (isNaN(addr) || isNaN(cmd)) {
+      setNecResult("❌ 请输入十六进制 (例: 40 12)");
+      return;
+    }
+    setNecResult("发射中...");
+    const result = await transmitRawNEC(addr, cmd);
+    if (result.success) {
+      setNecResult(`✅ 已发射 NEC addr=0x${addr.toString(16).toUpperCase()} cmd=0x${cmd.toString(16).toUpperCase()}`);
+    } else {
+      setNecResult(`❌ 发射失败: ${result.method}`);
+    }
+    setTimeout(() => setNecResult(null), 6000);
+  };
 
   useEffect(() => {
     if (Platform.OS === "web" && typeof window !== "undefined") {
@@ -440,6 +463,42 @@ export default function HomeScreen() {
         {loading && <ActivityIndicator style={{ marginTop: 8 }} color="#58a6ff" />}
       </ScrollView>
       {irStatus && <View style={styles.irMsg}><Text style={styles.irMsgT}>{irStatus}</Text></View>}
+
+      {/* ── Debug Panel: Raw NEC Transmitter ── */}
+      <TouchableOpacity style={styles.debugToggle} onPress={() => setShowDebug(!showDebug)}>
+        <Text style={styles.debugToggleText}>🔧 {showDebug ? "隐藏" : "调试"}面板</Text>
+      </TouchableOpacity>
+      {showDebug && (
+        <View style={styles.debugPanel}>
+          <View style={styles.debugRow}>
+            <Text style={styles.debugLabel}>NEC 地址 (hex):</Text>
+            <TextInput
+              style={styles.debugInput}
+              value={necAddr}
+              onChangeText={setNecAddr}
+              placeholder="40"
+              placeholderTextColor="#484f58"
+              autoCapitalize="none"
+            />
+          </View>
+          <View style={styles.debugRow}>
+            <Text style={styles.debugLabel}>NEC 命令 (hex):</Text>
+            <TextInput
+              style={styles.debugInput}
+              value={necCmd}
+              onChangeText={setNecCmd}
+              placeholder="12"
+              placeholderTextColor="#484f58"
+              autoCapitalize="none"
+            />
+          </View>
+          <TouchableOpacity style={styles.debugSend} onPress={handleSendNEC}>
+            <Text style={styles.debugSendText}>📡 发射 NEC</Text>
+          </TouchableOpacity>
+          {necResult && <Text style={styles.debugResult}>{necResult}</Text>}
+        </View>
+      )}
+
       {renderBar()}
       <View style={{ height: insets.bottom + 8 }} />
     </View>
@@ -593,4 +652,25 @@ const styles = StyleSheet.create({
   // Misc
   linkBtn: { marginTop: 16, alignItems: "center", paddingVertical: 8 },
   linkBtnText: { color: "#58a6ff", fontSize: 14 },
+
+  // Debug panel
+  debugToggle: { alignSelf: "flex-end", paddingVertical: 4, paddingHorizontal: 8, marginTop: 4 },
+  debugToggleText: { color: "#8b949e", fontSize: 12 },
+  debugPanel: {
+    backgroundColor: "#161b22", borderRadius: 12, padding: 12,
+    borderColor: "#30363d", borderWidth: 1, marginTop: 4,
+  },
+  debugRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  debugLabel: { color: "#8b949e", fontSize: 13, width: 100 },
+  debugInput: {
+    flex: 1, backgroundColor: "#0d1117", borderRadius: 8,
+    borderColor: "#30363d", borderWidth: 1, paddingHorizontal: 10,
+    paddingVertical: 6, fontSize: 14, color: "#e6edf3", fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  debugSend: {
+    backgroundColor: "#238636", borderRadius: 8, paddingVertical: 8,
+    alignItems: "center", marginTop: 4,
+  },
+  debugSendText: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  debugResult: { color: "#7ec97e", fontSize: 12, textAlign: "center", marginTop: 6 },
 });
