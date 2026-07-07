@@ -527,7 +527,15 @@ export default function HomeScreen() {
           <TouchableOpacity style={styles.debugSend} onPress={handleSendNEC}>
             <Text style={styles.debugSendText}>📡 发射 NEC</Text>
           </TouchableOpacity>
-          {necResult && <Text style={styles.debugResult}>{necResult}</Text>}
+          {necResult && (
+            <TextInput
+              style={styles.debugResult}
+              value={necResult}
+              multiline
+              editable={false}
+              selectTextOnFocus
+            />
+          )}
         </View>
       )}
 
@@ -710,5 +718,10 @@ const styles = StyleSheet.create({
     alignItems: "center", marginTop: 4,
   },
   debugSendText: { color: "#fff", fontSize: 15, fontWeight: "600" },
-  debugResult: { color: "#7ec97e", fontSize: 12, textAlign: "center", marginTop: 6 },
+  debugResult: {
+    color: "#7ec97e", fontSize: 12, marginTop: 6,
+    backgroundColor: "#0d1117", borderRadius: 8, padding: 8,
+    borderColor: "#30363d", borderWidth: 1, textAlignVertical: "top",
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
 });
