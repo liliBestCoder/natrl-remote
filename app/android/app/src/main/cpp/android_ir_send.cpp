@@ -1,10 +1,11 @@
-// Enable virtual methods + skip ESP hw code in IRrecv.cpp
+// Enable virtual methods + test harness (needed by IRac UNIT_TEST macro)
 #define UNIT_TEST 1
 
 #include "android_ir_send.h"
 #include "arduino_stub/Arduino.h"
 #include "IRremoteESP8266.h"
 #include "IRsend.h"
+#include "IRsend_test.h"
 #include "IRac.h"
 #include "IRutils.h"
 #include "ir_Gree.h"
@@ -25,25 +26,21 @@
 #include "ir_Electra.h"
 #include "ir_Whirlpool.h"
 
-// ─── CaptureIRsend: IRsend subclass that collects timing into vector ───
+// ─── CaptureIRsend: extends IRsendTest (which has timing capture + makeDecodeResult) ───
 
-class CaptureIRsend : public IRsend {
+class CaptureIRsend : public IRsendTest {
 public:
-    std::vector<uint32_t> timing;
-
-    CaptureIRsend() : IRsend(0, false, true), _on(false) {
+    CaptureIRsend() : IRsendTest(0, false, true) {
         timing.reserve(2048);
     }
 
-    void _delayMicroseconds(uint32_t usec) override {
-        if (usec > 0) timing.push_back(usec);
+    // Copy captured output[] to timing vector after each send
+    std::vector<uint32_t> timing;
+    void saveTiming() {
+        timing.clear();
+        for (uint16_t i = 1; i <= last; i++)
+            timing.push_back(output[i]);
     }
-
-    void ledOn()  override { _on = true; }
-    void ledOff() override { _on = false; }
-
-private:
-    bool _on;
 };
 
 // ─── AndroidIRsend public API ──────────────────────────────────────
@@ -84,7 +81,7 @@ ir_timing_result AndroidIRsend::encodeAC(
     else if (!strcmp(fan,"high")) f=stdAc::fanspeed_t::kHigh;
 
     CaptureIRsend* s = static_cast<CaptureIRsend*>(_irsend);
-    s->timing.clear();
+    s->reset();  // clear output[] via IRsendTest
 
     IRac ac(0);
     ac.next.protocol = brandToProto(brand);
@@ -95,6 +92,7 @@ ir_timing_result AndroidIRsend::encodeAC(
     ac.next.power = true;
     ac.sendAc();
 
+    s->saveTiming();
     r.timing = s->timing;
     if (!strcmp(brand,"panasonic")) r.carrier_freq = 36700;
     if (!strcmp(brand,"whirlpool")) r.carrier_freq = 38400;
@@ -147,7 +145,7 @@ ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command)
 
     const TVBrand* tv = findTVBrand(brand);
     CaptureIRsend* s = static_cast<CaptureIRsend*>(_irsend);
-    s->timing.clear();
+    s->reset();
 
     // Determine command code
     uint16_t cmd = tv->power; // default
@@ -179,6 +177,7 @@ ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command)
         break;
     }
 
+    s->saveTiming();
     r.timing = s->timing;
     return r;
 }

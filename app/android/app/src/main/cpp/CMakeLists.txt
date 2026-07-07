@@ -27,5 +27,6 @@ add_library(natrl_ir SHARED
     ${IR_SOURCES}
 )
 
-target_compile_options(natrl_ir PRIVATE -Wall -O2 -fPIC -fexceptions -frtti -std=c++17)
+target_compile_options(natrl_ir PRIVATE -Wall -O2 -fPIC -fexceptions -frtti -std=c++17
+    -include "${CMAKE_CURRENT_SOURCE_DIR}/arduino_stub/Arduino.h")
 target_compile_definitions(natrl_ir PRIVATE UNIT_TEST ARDUINO)
