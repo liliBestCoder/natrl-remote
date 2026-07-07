@@ -58,3 +58,20 @@ typedef void (*voidFuncPtr)(void);
 #define ICACHE_FLASH_ATTR
 #define F(x) x
 #define yield()
+
+// Serial stub — IRutils uses Serial.print() for debug
+struct SerialStub {
+    void print(const char*) {}
+    void print(const String&) {}
+    void print(char) {}
+    void print(int) {}
+    void print(unsigned int) {}
+    void print(long) {}
+    void print(unsigned long) {}
+    void print(double) {}
+    void println() {}
+    void println(const char*) {}
+    void println(const String&) {}
+    void begin(unsigned long) {}
+};
+static SerialStub Serial;
