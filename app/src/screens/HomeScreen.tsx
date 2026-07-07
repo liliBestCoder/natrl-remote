@@ -386,7 +386,7 @@ export default function HomeScreen() {
   // === RENDER: Setup ===
   if (setupStep) {
     return (
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "padding"}>
       <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
         <Text style={styles.hdr}>Natrl Remote</Text>
         <View style={styles.setupCard}>
@@ -446,7 +446,7 @@ export default function HomeScreen() {
 
   // === RENDER: Main ===
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "padding"}>
     <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
       <Text style={styles.hdr}>Natrl Remote</Text>
       {acDevice ? (

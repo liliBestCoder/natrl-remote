@@ -331,13 +331,14 @@ async function execDiscoverDevice(
 ): Promise<string> {
   const room = args.room || "room";
   const deviceType = args.device_type || "ac";
+  const typeWord = deviceType === "tv" ? "电视" : "空调";
   const devName =
     args.device_name ||
     (room === "卧室" || room === "bedroom"
-      ? "卧室空调"
+      ? `卧室${typeWord}`
       : room === "客厅" || room === "living_room"
-      ? "客厅空调"
-      : "空调");
+      ? `客厅${typeWord}`
+      : typeWord);
 
   // Don't create device yet — only create after probing succeeds.
   // Store intent in session for probe_brand to use.
