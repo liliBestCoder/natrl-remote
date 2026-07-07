@@ -38,7 +38,10 @@ public:
     std::vector<uint32_t> timing;
     void saveTiming() {
         timing.clear();
-        for (uint16_t i = 1; i <= last; i++)
+        // Must include output[0] — IRsendTest::mark() stores the first
+        // mark there, and ConsumerIrManager expects mark/space alternating
+        // starting with a mark. Skipping output[0] swaps mark↔space!
+        for (uint16_t i = 0; i <= last; i++)
             timing.push_back(output[i]);
     }
 };
