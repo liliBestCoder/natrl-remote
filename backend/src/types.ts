@@ -18,6 +18,8 @@ export type IntentType =
   | "set_fan_speed"     // "风速调大"
   | "query_state";      // "现在多少度"
 
+export type TVCommand = "power" | "vol_up" | "vol_down" | "ch_up" | "ch_down" | "mute" | "input" | "num_0" | "num_1" | "num_2" | "num_3" | "num_4" | "num_5" | "num_6" | "num_7" | "num_8" | "num_9";
+
 export type DeviceType = "ac" | "tv" | "fan" | "unknown";
 export type ACMode = "cool" | "heat" | "dry" | "fan_only" | "auto";
 export type FanSpeed = "low" | "medium" | "high" | "auto";
@@ -70,6 +72,7 @@ export interface ToolCallArgs {
   reacted?: boolean;
   confirmed?: boolean;
   name?: string;
+  command?: string;   // TV command: power/vol_up/vol_down/ch_up/ch_down/mute/input
   // Probe-specific
   probe_commands?: Array<{
     temperature: number;

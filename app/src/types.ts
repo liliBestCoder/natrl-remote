@@ -62,6 +62,7 @@ export interface ToolCallArgs {
   reacted?: boolean;
   confirmed?: boolean;
   name?: string;
+  command?: string;
   probe_commands?: Array<{
     temperature: number;
     mode: string;

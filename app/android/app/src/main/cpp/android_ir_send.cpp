@@ -98,6 +98,88 @@ ir_timing_result AndroidIRsend::encodeAC(
     return r;
 }
 
+// ─── TV IR code database ─────────────────────────────────────────
+
+struct TVBrand {
+    const char* name;
+    decode_type_t protocol;
+    uint16_t address;      // NEC: 8-bit address
+    uint16_t power;
+    uint16_t vol_up;
+    uint16_t vol_down;
+    uint16_t ch_up;
+    uint16_t ch_down;
+    uint16_t mute;
+    uint16_t input;        // source/input select
+    uint16_t num[10];      // number keys 0-9
+};
+
+static const TVBrand TV_BRANDS[] = {
+    // Chinese brands (NEC protocol) — brand_code must match DB ir_protocols
+    {"hisense",     NEC,  0x00, 0x12, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19}},
+    {"skyworth",    NEC,  0x00, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x15, 0x16, {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x00}},
+    {"changhong",   NEC,  0x00, 0x12, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19}},
+    {"konka",       NEC,  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19}},
+    {"xiaomi_tv",   NEC,  0x00, 0x15, 0x16, 0x17, 0x18, 0x19, 0x0D, 0x0F, {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09}},
+    {"sony_tv",     SONY, 0x01, 0x15, 0x12, 0x13, 0x10, 0x11, 0x14, 0x25, {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09}},
+    {"philips_tv",  RC5,  0x00, 0x0C, 0x10, 0x11, 0x20, 0x21, 0x0D, 0x38, {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09}},
+    {"sharp_tv",    NEC,  0x00, 0x15, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19}},
+    {nullptr, NEC, 0, 0, 0, 0, 0, 0, 0, 0, {0}},
+};
+
+static const TVBrand* findTVBrand(const char* brand) {
+    for (const auto& b : TV_BRANDS)
+        if (b.name && strcmp(brand, b.name) == 0) return &b;
+    return &TV_BRANDS[0]; // default: hisense
+}
+
+static uint64_t buildNEC(uint8_t addr, uint8_t cmd) {
+    return ((uint64_t)addr << 24) | ((uint64_t)(~addr & 0xFF) << 16)
+         | ((uint64_t)cmd << 8)   | (uint64_t)(~cmd & 0xFF);
+}
+
+ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command) {
+    ir_timing_result r;
+    r.carrier_freq = 38000;
+
+    const TVBrand* tv = findTVBrand(brand);
+    CaptureIRsend* s = static_cast<CaptureIRsend*>(_irsend);
+    s->timing.clear();
+
+    // Determine command code
+    uint16_t cmd = tv->power; // default
+    if (!strcmp(command, "power"))        cmd = tv->power;
+    else if (!strcmp(command, "vol_up"))   cmd = tv->vol_up;
+    else if (!strcmp(command, "vol_down")) cmd = tv->vol_down;
+    else if (!strcmp(command, "ch_up"))    cmd = tv->ch_up;
+    else if (!strcmp(command, "ch_down"))  cmd = tv->ch_down;
+    else if (!strcmp(command, "mute"))     cmd = tv->mute;
+    else if (!strcmp(command, "input"))    cmd = tv->input;
+    else if (command[0] >= '0' && command[0] <= '9')
+        cmd = tv->num[command[0] - '0'];
+
+    // Send via IRremoteESP8266 protocol sender
+    switch (tv->protocol) {
+    case NEC: {
+        uint64_t data = buildNEC(tv->address & 0xFF, cmd & 0xFF);
+        s->sendNEC(data);
+        break;
+    }
+    case SONY:
+        s->sendSony(tv->address, cmd, 2);
+        break;
+    case RC5:
+        s->sendRC5((tv->address << 6) | (cmd & 0x3F), 12);
+        break;
+    default:
+        s->sendNEC(buildNEC(0x00, 0x12));
+        break;
+    }
+
+    r.timing = s->timing;
+    return r;
+}
+
 uint32_t AndroidIRsend::getCarrierFreq(const char* brand) {
     if (!strcmp(brand,"panasonic")) return 36700;
     if (!strcmp(brand,"whirlpool")) return 38400;

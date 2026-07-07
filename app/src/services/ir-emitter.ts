@@ -23,6 +23,10 @@ interface InfraredEncoderNative {
     carrierFreq: number;
     pattern: number[];
   }>;
+  encodeTV(brandCode: string, command: string): Promise<{
+    carrierFreq: number;
+    pattern: number[];
+  }>;
   getCarrierFreq(brandCode: string): Promise<number>;
 }
 
@@ -164,6 +168,38 @@ export async function encodeAndEmitProbeSequence(
   const successCount = results.filter(r => r.success).length;
   console.log(`[ir-emitter] ✅ Probe done: ${successCount}/${commands.length} succeeded`);
   return results;
+}
+
+/**
+ * Encode TV IR locally, then emit via Android IR blaster.
+ */
+export async function encodeAndEmitTV(
+  brandCode: string,
+  command: string,
+): Promise<{ success: boolean; method: string }> {
+  console.log(`[ir-emitter] TV encode+emit: brand=${brandCode} cmd=${command}`);
+
+  if (InfraredEncoder) {
+    try {
+      const encoded = await InfraredEncoder.encodeTV(brandCode, command);
+      const carrierFreq = encoded.carrierFreq;
+      const pattern = encoded.pattern;
+      console.log(`[ir-emitter] ✅ TV encode: ${pattern.length} pulses @ ${carrierFreq}Hz`);
+
+      if (Platform.OS === "android" && InfraredEmitter) {
+        const ok = await InfraredEmitter.transmit(carrierFreq, pattern);
+        if (ok) {
+          console.log("[ir-emitter] ✅ TV emitted via Android IR blaster");
+          return { success: true, method: "android_native" };
+        }
+      }
+      return { success: false, method: "no_hardware" };
+    } catch (e: any) {
+      console.warn("[ir-emitter] ⚠️ TV encode failed:", e.message);
+      return { success: false, method: "encode_error" };
+    }
+  }
+  return { success: false, method: "no_encoder" };
 }
 
 /**

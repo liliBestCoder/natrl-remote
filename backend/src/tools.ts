@@ -41,51 +41,7 @@ export interface ToolContext {
 
 const probeSessions = new Map<string, ProbeSession>();
 
-// Brand name → brand_code mapping (matches database ir_protocols.brand_code)
-const BRAND_ALIASES: Record<string, string[]> = {
-  gree:     ["gree"],
-  格力:     ["gree"],
-  midea:    ["midea"],
-  美的:     ["midea"],
-  haier:    ["haier"],
-  海尔:     ["haier"],
-  tcl:      ["tcl"],
-  kelon:    ["kelon"],
-  科龙:     ["kelon"],
-  panasonic:["panasonic"],
-  松下:     ["panasonic"],
-  coolix:   ["coolix"],
-  daikin:   ["daikin"],
-  大金:     ["daikin"],
-  mitsubishi:["mitsubishi"],
-  三菱:     ["mitsubishi"],
-  fujitsu:  ["fujitsu"],
-  富士通:   ["fujitsu"],
-  hitachi:  ["hitachi"],
-  日立:     ["hitachi"],
-  samsung:  ["samsung"],
-  三星:     ["samsung"],
-  carrier:  ["carrier"],
-  开利:     ["carrier"],
-  lg:       ["lg"],
-  toshiba:  ["toshiba"],
-  东芝:     ["toshiba"],
-  electra:  ["electra"],
-  whirlpool:["whirlpool"],
-  惠而浦:   ["whirlpool"],
-};
-
-// Look up brand codes matching a user hint (case-insensitive substring match)
-function matchBrandHint(hint: string): string[] {
-  const lower = hint.toLowerCase().trim();
-  const matched: string[] = [];
-  for (const [key, codes] of Object.entries(BRAND_ALIASES)) {
-    if (key.toLowerCase().includes(lower) || lower.includes(key.toLowerCase())) {
-      matched.push(...codes);
-    }
-  }
-  return [...new Set(matched)]; // deduplicate
-}
+import { matchBrandHint, getProbeOrder, getBrandDisplay } from "./brand-db";
 
 // ─── Tool Definitions (DeepSeek format) ──────────────────────────────
 
@@ -249,6 +205,33 @@ export const TOOL_DEFINITIONS = [
     },
   },
 
+  // ── TV Control ──
+  {
+    type: "function" as const,
+    function: {
+      name: "control_tv",
+      description:
+        "控制电视。通过红外发射指令。" +
+        "常用命令: power(开关), vol_up(音量+), vol_down(音量-), ch_up(频道+), ch_down(频道-), mute(静音), input(信号源)。" +
+        "例如'打开电视'→{command:'power'}，'音量大一点'→{command:'vol_up'}，'换个台'→{command:'ch_up'}。",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            enum: ["power", "vol_up", "vol_down", "ch_up", "ch_down", "mute", "input"],
+            description: "电视命令",
+          },
+          device_id: {
+            type: "string",
+            description: "设备ID。不传则使用第一个已验证的电视。",
+          },
+        },
+        required: ["command"],
+      },
+    },
+  },
+
   // ── State Query ──
   {
     type: "function" as const,
@@ -323,6 +306,8 @@ export async function executeToolCall(
       return execVerifyDevice(args, ctx);
     case "control_ac":
       return execControlAc(args, ctx);
+    case "control_tv":
+      return execControlTv(args, ctx);
     case "get_device_state":
       return execGetDeviceState(args, ctx);
     case "list_devices":
@@ -394,14 +379,14 @@ async function execProbeBrand(
   const devName = ctx.session.pendingDeviceName || "空调";
 
   // Get all brand codes to probe
-  const allBrands = BRAND_MARKET_ORDER;
+  const allBrands = await getProbeOrder(ctx.session.deviceType === "tv" ? "tv" : "ac");
 
   // Reorder based on brand hint
   let orderedBrands = allBrands;
   const hint = args.brand_hint?.trim();
   if (hint) {
     ctx.session.brandHint = hint;
-    const matchedCodes = matchBrandHint(hint);
+    const matchedCodes = await matchBrandHint(hint, ctx.session.deviceType as any);
     console.log(`[probe] 用户提示品牌: "${hint}" → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
     if (matchedCodes.length > 0) {
       orderedBrands = [...matchedCodes.filter(b => allBrands.includes(b)), ...allBrands.filter(b => !matchedCodes.includes(b))];
@@ -426,27 +411,32 @@ async function execProbeBrand(
   };
   probeSessions.set(deviceId, session);
 
-  // ── Pick FIRST brand, prepare multi-command probe ──
+  // ── Pick FIRST brand, prepare probe commands ──
   const firstBrandCode = orderedBrands[0];
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
-  // Probe commands (params only, client encodes with .so)
-  const probeCombos: Array<{ temperature: number; mode: string; fan_speed: string; power: boolean; label: string }> = [
-    { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-    { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
-    { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-    { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
-    { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
-  ];
+  const isTV = ctx.session.deviceType === "tv";
 
-  console.log(`[probe] ───── 第 1/${orderedBrands.length} 个品牌: ${firstBrandCode} ─────`);
+  // Probe commands (params only, client encodes with .so)
+  const probeCombos = isTV
+    ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
+    : [
+        { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+        { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
+        { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+        { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
+        { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
+      ];
+
+  console.log(`[probe] ───── 第 1/${orderedBrands.length} 个品牌: ${firstBrandCode} (${isTV ? "TV" : "AC"}) ─────`);
   console.log(`[probe] 准备 ${probeCombos.length} 条探测命令(客户端本地编码)`);
 
   // Build tool_call for client
-  const brandDisplay = getBrandDisplayName(firstBrandCode);
-  const cmdDesc = probeCombos.map((c, i) => `  命令${i + 1}: ${c.label}`).join("\n");
+  const brandDisplay = await getBrandDisplay(firstBrandCode);
+  const cmdDesc = probeCombos.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
   const hintMsg = hint ? `\n🎯 优先尝试: "${hint}" → ${brandDisplay}` : "";
+  const deviceWord = isTV ? "电视" : "空调";
 
   const toolCall: ToolCall = {
     name: "probe_brand",
@@ -455,15 +445,15 @@ async function execProbeBrand(
       probe_brand: brandDisplay,
       probe_step: 1,
       probe_total: orderedBrands.length,
-      probe_commands: probeCombos.map(c => ({
-        temperature: c.temperature,
-        mode: c.mode,
-        fan_speed: c.fan_speed,
+      probe_commands: probeCombos.map((c: any) => ({
+        temperature: c.temperature || 0,
+        mode: c.mode || "",
+        fan_speed: c.fan_speed || "",
         power: c.power,
         label: c.label,
       })),
     },
-    message: `📡 正在探测品牌: **${brandDisplay}** (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察空调：\n• 听到"嘀"声或蜂鸣 → 说"有反应"\n• 指示灯闪烁 → 说"有反应"\n• 空调开机/出风 → 说"有反应"\n• 完全没动静 → 说"没反应"`,
+    message: `📡 正在探测品牌: **${brandDisplay}** (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
   };
 
   ctx.toolCall = toolCall;
@@ -495,17 +485,7 @@ async function execProbeBrand(
   });
 }
 
-// Top AC brands by market share (used for probing order)
-const BRAND_MARKET_ORDER = [
-  "gree", "midea", "haier", "tcl", "kelon", "panasonic",
-  "coolix", "daikin", "mitsubishi", "fujitsu", "hitachi",
-  "samsung", "carrier", "lg", "toshiba", "electra", "whirlpool",
-];
 
-function getBrandDisplayName(brandCode: string): string {
-  const entry = Object.entries(BRAND_ALIASES).find(([, codes]) => codes.includes(brandCode));
-  return entry ? `${entry[0]} (${brandCode})` : brandCode;
-}
 
 async function execRespondProbe(
   args: any,
@@ -577,7 +557,7 @@ async function execRespondProbe(
     ctx.session.probingActive = false;
     ctx.setupStep = undefined;
 
-    const brandName = getBrandDisplayName(currentStep.brandCode);
+    const brandName = await getBrandDisplay(currentStep.brandCode);
     return JSON.stringify({
       success: true,
       matched_brand: currentStep.brandCode,
@@ -612,27 +592,32 @@ async function execRespondProbe(
     });
   }
 
-  // ── Advance to next brand, prepare multi-command probe params ──
+  // ── Advance to next brand, prepare probe params ──
   const nextStep = session.steps[nextUnattempted];
   nextStep.attempted = true;
   const brandCode = nextStep.brandCode;
 
+  const isTV2 = ctx.session.deviceType === "tv";
+
   // Probe commands (params only, client encodes with .so)
-  const probeCombos: Array<{ temperature: number; mode: string; fan_speed: string; power: boolean; label: string }> = [
-    { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-    { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
-    { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-    { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
-    { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
-  ];
+  const probeCombos2 = isTV2
+    ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
+    : [
+        { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+        { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
+        { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+        { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
+        { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
+      ];
 
   const attemptedCount2 = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
   const progressPct = Math.round((attemptedCount2 / session.steps.length) * 100);
 
-  console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} ─────`);
+  console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} (${isTV2 ? "TV" : "AC"}) ─────`);
 
-  const brandDisplay = getBrandDisplayName(brandCode);
-  const cmdDesc = probeCombos.map((c, i) => `  命令${i + 1}: ${c.label}`).join("\n");
+  const brandDisplay = await getBrandDisplay(brandCode);
+  const cmdDesc = probeCombos2.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
+  const deviceWord2 = isTV2 ? "电视" : "空调";
 
   const toolCall: ToolCall = {
     name: "probe_brand",
@@ -641,15 +626,15 @@ async function execRespondProbe(
       probe_brand: brandDisplay,
       probe_step: attemptedCount2,
       probe_total: session.steps.length,
-      probe_commands: probeCombos.map(c => ({
-        temperature: c.temperature,
-        mode: c.mode,
-        fan_speed: c.fan_speed,
+      probe_commands: probeCombos2.map((c: any) => ({
+        temperature: c.temperature || 0,
+        mode: c.mode || "",
+        fan_speed: c.fan_speed || "",
         power: c.power,
         label: c.label,
       })),
     },
-    message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount2}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n观察空调反应后说"有反应"或"没反应"。`,
+    message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount2}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${probeCombos2.length} 条红外命令：\n${cmdDesc}\n\n观察${deviceWord2}反应后说"有反应"或"没反应"。`,
   };
 
   ctx.toolCall = toolCall;
@@ -666,13 +651,13 @@ async function execRespondProbe(
   ctx.session.probingActive = true;
   ctx.session.phase = "discovery";
 
-  console.log(`[probe] 📡 下一个品牌 ${brandCode} 的 ${probeCombos.length} 条命令参数已准备 (进度 ${attemptedCount2}/${session.steps.length} = ${progressPct}%)`);
+  console.log(`[probe] 📡 下一个品牌 ${brandCode} 的 ${probeCombos2.length} 条命令参数已准备 (进度 ${attemptedCount2}/${session.steps.length} = ${progressPct}%)`);
 
   return JSON.stringify({
     success: true,
     brand_code: brandCode,
     brand_display: brandDisplay,
-    command_count: probeCombos.length,
+    command_count: probeCombos2.length,
     step: attemptedCount2,
     total: session.steps.length,
     progress_pct: progressPct,
@@ -866,6 +851,60 @@ async function execControlAc(
     },
     ir_disclaimer:
       "红外指令已发送。注意：红外是单向通信，无法确认空调是否真正执行。",
+  });
+}
+
+async function execControlTv(
+  args: any,
+  ctx: ToolContext
+): Promise<string> {
+  let deviceId = args.device_id;
+  if (!deviceId) {
+    const devices = await getUserDevices(ctx.userId);
+    const verified = devices.filter((d) => d.verified && d.deviceType === "tv");
+    if (verified.length === 0) {
+      return JSON.stringify({
+        error: "没有已就绪的电视。请先说'我客厅有个电视'来添加设备。",
+      });
+    }
+    deviceId = verified[0].id;
+  }
+
+  const device = await getDevice(deviceId);
+  if (!device || !device.brandCode) {
+    return JSON.stringify({ error: "电视设备未就绪，请先完成品牌识别。" });
+  }
+
+  const command: string = args.command || "power";
+  const cmdNames: Record<string, string> = {
+    power: "开关", vol_up: "音量+", vol_down: "音量-",
+    ch_up: "频道+", ch_down: "频道-", mute: "静音", input: "信号源",
+  };
+  const cmdName = cmdNames[command] || command;
+
+  const toolCall: ToolCall = {
+    name: "control_tv",
+    args: {
+      brand_code: device.brandCode,
+      command,
+      device_id: device.id,
+    },
+    message: `📺 已发送红外指令: ${cmdName} → ${device.name} (${device.brandCode})`,
+  };
+
+  ctx.toolCall = toolCall;
+  ctx.phase = "control";
+  ctx.deviceId = device.id;
+
+  console.log(`[control] tool_call: control_tv brand=${device.brandCode} cmd=${command}`);
+
+  return JSON.stringify({
+    success: true,
+    device_name: device.name,
+    brand_code: device.brandCode,
+    command,
+    cmd_name: cmdName,
+    tool_call: toolCall,
   });
 }
 

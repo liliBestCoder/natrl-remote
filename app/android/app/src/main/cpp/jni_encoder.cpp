@@ -50,4 +50,37 @@ Java_com_anonymous_natrlremote_ir_InfraredEncoderModule_nativeGetCarrierFreq(
     return (jint)freq;
 }
 
+// TV encoding JNI
+JNIEXPORT jobject JNICALL
+Java_com_anonymous_natrlremote_ir_InfraredEncoderModule_nativeEncodeTV(
+    JNIEnv* env, jobject, jstring brand, jstring command)
+{
+    const char* bc = env->GetStringUTFChars(brand, nullptr);
+    const char* cmd = env->GetStringUTFChars(command, nullptr);
+
+    AndroidIRsend sender;
+    ir_timing_result r = sender.encodeTV(bc, cmd);
+
+    env->ReleaseStringUTFChars(brand, bc);
+    env->ReleaseStringUTFChars(command, cmd);
+
+    jclass mapClass = env->FindClass("java/util/HashMap");
+    jmethodID init = env->GetMethodID(mapClass, "<init>", "()V");
+    jmethodID put = env->GetMethodID(mapClass, "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+    jobject result = env->NewObject(mapClass, init);
+
+    jclass intClass = env->FindClass("java/lang/Integer");
+    jmethodID intInit = env->GetMethodID(intClass, "<init>", "(I)V");
+
+    jobject freqObj = env->NewObject(intClass, intInit, (jint)r.carrier_freq);
+    env->CallObjectMethod(result, put, env->NewStringUTF("carrierFreq"), freqObj);
+
+    jintArray pattern = env->NewIntArray(r.timing.size());
+    env->SetIntArrayRegion(pattern, 0, r.timing.size(), (jint*)r.timing.data());
+    env->CallObjectMethod(result, put, env->NewStringUTF("pattern"), pattern);
+
+    return result;
+}
+
 } // extern "C"

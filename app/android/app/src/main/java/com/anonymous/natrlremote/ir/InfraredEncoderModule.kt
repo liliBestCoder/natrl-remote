@@ -31,6 +31,10 @@ class InfraredEncoderModule(reactContext: ReactApplicationContext) :
 
     private external fun nativeGetCarrierFreq(brandCode: String): Int
 
+    private external fun nativeEncodeTV(
+        brandCode: String, command: String
+    ): java.util.HashMap<String, Any>?
+
     /**
      * Encode an AC IR frame locally.
      *
@@ -63,6 +67,23 @@ class InfraredEncoderModule(reactContext: ReactApplicationContext) :
             promise.resolve(nativeGetCarrierFreq(brandCode))
         } catch (e: Exception) {
             promise.resolve(38000)
+        }
+    }
+
+    @ReactMethod
+    fun encodeTV(brandCode: String, command: String, promise: Promise) {
+        try {
+            val result = nativeEncodeTV(brandCode, command)
+            if (result == null) {
+                promise.reject("ENCODE_ERROR", "Failed to encode TV IR frame")
+                return
+            }
+            val map = Arguments.createMap()
+            map.putInt("carrierFreq", (result["carrierFreq"] as Int?) ?: 38000)
+            map.putArray("pattern", Arguments.fromArray(result["pattern"] as IntArray))
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("ENCODE_ERROR", "TV IR encoding failed: ${e.message}")
         }
     }
 }

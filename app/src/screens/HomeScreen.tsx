@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
-import { emitIr, encodeAndEmit, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder } from "../services/ir-emitter";
+import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder } from "../services/ir-emitter";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -232,33 +232,49 @@ export default function HomeScreen() {
           const probeCmds = tc.args.probe_commands;
           const emitResults: string[] = [];
 
-          encodeAndEmitProbeSequence(
-            brandCode,
-            probeCmds.map((c: any) => ({
-              temperature: c.temperature,
-              mode: c.mode,
-              fanSpeed: c.fan_speed,
-              power: c.power,
-              label: c.label,
-            })),
-            2000,
-            (idx, total, label, success) => {
-              const icon = success ? "📡" : "❌";
-              emitResults.push(`${icon} ${idx}/${total}: ${label}`);
-              setIrStatus(`🔍 探测: ${brandCode}\n${emitResults.slice(-3).join("\n")}`);
-            }
-          ).then((seqResults) => {
-            const successCount = seqResults.filter((r) => r.success).length;
-            const total = probeCmds.length;
-            if (successCount === total) {
-              setIrStatus(`✅ ${total}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
-            } else if (successCount > 0) {
-              setIrStatus(`⚠️ ${successCount}/${total} 条已发射 (${brandCode})\n观察空调是否有反应...`);
+          // Detect TV probe (temperature=0, mode="") vs AC probe
+          const isTV = probeCmds.length === 1 && (probeCmds[0] as any).temperature === 0;
+
+          if (isTV) {
+            // TV probe: send power toggle once
+            const cmd = probeCmds[0];
+            const irResult = await encodeAndEmitTV(brandCode, "power");
+            if (irResult.success) {
+              setIrStatus(`📺 已发送: ${brandCode} 开关命令\n观察电视是否有反应...`);
             } else {
-              setIrStatus(`❌ 无红外硬件，无法发射 (${brandCode})\n请确认手机支持红外`);
+              setIrStatus(`❌ TV发射失败 (${brandCode})`);
             }
             setTimeout(() => setIrStatus(null), 10000);
-          });
+          } else {
+            // AC probe: multi-command sequence
+            encodeAndEmitProbeSequence(
+              brandCode,
+              probeCmds.map((c: any) => ({
+                temperature: c.temperature,
+                mode: c.mode,
+                fanSpeed: c.fan_speed,
+                power: c.power,
+                label: c.label,
+              })),
+              2000,
+              (idx, total, label, success) => {
+                const icon = success ? "📡" : "❌";
+                emitResults.push(`${icon} ${idx}/${total}: ${label}`);
+                setIrStatus(`🔍 探测: ${brandCode}\n${emitResults.slice(-3).join("\n")}`);
+              }
+            ).then((seqResults) => {
+              const successCount = seqResults.filter((r) => r.success).length;
+              const total = probeCmds.length;
+              if (successCount === total) {
+                setIrStatus(`✅ ${total}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
+              } else if (successCount > 0) {
+                setIrStatus(`⚠️ ${successCount}/${total} 条已发射 (${brandCode})\n观察空调是否有反应...`);
+              } else {
+                setIrStatus(`❌ 无红外硬件，无法发射 (${brandCode})\n请确认手机支持红外`);
+              }
+              setTimeout(() => setIrStatus(null), 10000);
+            });
+          }
 
         } else if (tc.name === "control_ac") {
           // Single control command — encode locally then emit
@@ -272,6 +288,19 @@ export default function HomeScreen() {
             setIrStatus(`📡 红外已发射 (${tc.args.brand_code} ${tc.args.temperature}°C ${tc.args.mode})`);
           } else {
             setIrStatus(`⚠️ 发射失败 (${tc.args.brand_code}) — 方法: ${irResult.method}`);
+          }
+          setTimeout(() => setIrStatus(null), 6000);
+
+        } else if (tc.name === "control_tv") {
+          // TV command — encode locally then emit
+          const irResult = await encodeAndEmitTV(
+            tc.args.brand_code || "hisense",
+            tc.args.command || "power",
+          );
+          if (irResult.success) {
+            setIrStatus(`📺 红外已发射 (${tc.args.brand_code} ${tc.args.command})`);
+          } else {
+            setIrStatus(`⚠️ TV发射失败 (${tc.args.brand_code}) — 方法: ${irResult.method}`);
           }
           setTimeout(() => setIrStatus(null), 6000);
         }

@@ -11,9 +11,16 @@ class AndroidIRsend {
 public:
     AndroidIRsend();
     ~AndroidIRsend();
+
+    // AC encoding
     ir_timing_result encodeAC(const char* brand, int temp, const char* mode, const char* fan);
+
+    // TV encoding
+    ir_timing_result encodeTV(const char* brand, const char* command);
+
     static uint32_t getCarrierFreq(const char* brand);
     class IRsend* getSender();
+
 private:
     class IRsend* _irsend;
 };
