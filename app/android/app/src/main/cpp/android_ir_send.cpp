@@ -153,11 +153,6 @@ static const TVBrand* findTVBrand(const char* brand) {
     return &TV_BRANDS[0]; // default: hisense
 }
 
-static uint64_t buildNEC(uint8_t addr, uint8_t cmd) {
-    return ((uint64_t)addr << 24) | ((uint64_t)(~addr & 0xFF) << 16)
-         | ((uint64_t)cmd << 8)   | (uint64_t)(~cmd & 0xFF);
-}
-
 ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command) {
     ir_timing_result r;
     r.carrier_freq = 38000;
@@ -181,7 +176,9 @@ ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command)
     // Send via IRremoteESP8266 protocol sender
     switch (tv->protocol) {
     case NEC: {
-        uint64_t data = buildNEC(tv->address & 0xFF, cmd & 0xFF);
+        // encodeNEC handles LSB-first bit reversal that NEC requires.
+        // (sendNEC sends MSB first, so caller must pre-reverse bits)
+        uint32_t data = s->encodeNEC(tv->address & 0xFF, cmd & 0xFF);
         s->sendNEC(data);
         break;
     }
