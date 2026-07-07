@@ -12,6 +12,8 @@ typedef uint8_t byte;
 
 // String (IRremoteESP8266 uses std::string as String)
 using String = std::string;
+// Arduino String has substring(), std::string has substr()
+#define substring substr
 
 // Pin constants
 #define HIGH 0x1
