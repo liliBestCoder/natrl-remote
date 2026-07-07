@@ -6,7 +6,6 @@
 #include "IRremoteESP8266.h"
 #include "IRsend.h"
 #include "IRsend_test.h"
-#include "IRac.h"
 #include "IRutils.h"
 #include "ir_Gree.h"
 #include "ir_Midea.h"
@@ -66,6 +65,14 @@ static decode_type_t brandToProto(const char* brand) {
     return GREE;
 }
 
+// ─── Helper: capture timing from brand AC's internal IRsendTest ───
+template<typename T>
+static void captureAc(T& ac, std::vector<uint32_t>& timing) {
+    timing.clear();
+    for (uint16_t i = 0; i <= ac._irsend.last; i++)
+        timing.push_back(ac._irsend.output[i]);
+}
+
 ir_timing_result AndroidIRsend::encodeAC(
     const char* brand, int temp, const char* mode, const char* fan)
 {
@@ -83,22 +90,123 @@ ir_timing_result AndroidIRsend::encodeAC(
     else if (!strcmp(fan,"medium")) f=stdAc::fanspeed_t::kMedium;
     else if (!strcmp(fan,"high")) f=stdAc::fanspeed_t::kHigh;
 
-    CaptureIRsend* s = static_cast<CaptureIRsend*>(_irsend);
-    s->reset();  // clear output[] via IRsendTest
+    decode_type_t proto = brandToProto(brand);
 
-    IRac ac(0);
-    ac.next.protocol = brandToProto(brand);
-    ac.next.model = 1;
-    ac.next.mode = m;
-    ac.next.degrees = temp;
-    ac.next.fanspeed = f;
-    ac.next.power = true;
-    ac.sendAc();
+    switch (proto) {
+    case WHIRLPOOL_AC: {
+        IRWhirlpoolAc ac(0, false, true);
+        ac.begin();
+        ac.setModel(whirlpool_ac_remote_model_t::DG11J191);
+        ac.setMode(ac.convertMode(m));
+        ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f));
+        ac.setPowerToggle(true);
+        ac.send();
+        captureAc(ac, r.timing);
+        r.carrier_freq = 38400; break;
+    }
+    case GREE: {
+        IRGreeAC ac(0, gree_ac_remote_model_t::YAW1F, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case MIDEA: {
+        IRMideaAC ac(0, midea_ac_remote_model_t::KAYELU_A2, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case HAIER_AC: {
+        IRHaierAC ac(0, haier_ac_remote_model_t::V9014557_A, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case TCL112AC: {
+        IRTcl112Ac ac(0, tcl112_ac_remote_model_t::TAC09CHSD, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case KELON: {
+        IRKelvinatorAC ac(0, kelvinator_ac_remote_model_t::KELVINATOR, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case PANASONIC_AC: {
+        IRPanasonicAc ac(0, panasonic_ac_remote_model_t::kPanasonicLke, false, true);
+        ac.begin(); ac.setModel(panasonic_ac_remote_model_t::kPanasonicLke);
+        ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); r.carrier_freq = 36700; break;
+    }
+    case COOLIX: {
+        IRCoolixAC ac(0, coolix_ac_remote_model_t::COOLIX, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case DAIKIN: {
+        IRDaikinESP ac(0, daikin_esp_ac_remote_model_t::DAIKIN_ESP, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case MITSUBISHI_AC: {
+        IRMitsubishiAC ac(0, mitsubishi_ac_remote_model_t::MITSUBISHI_AC, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case FUJITSU_AC: {
+        IRFujitsuAC ac(0, fujitsu_ac_remote_model_t::ARRAH2E, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case HITACHI_AC: {
+        IRHitachiAC ac(0, hitachi_ac_remote_model_t::R_LT0541_HTA_A, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case SAMSUNG_AC: {
+        IRSamsungAc ac(0, samsung_ac_remote_model_t::SAMSUNG_AC, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case CARRIER_AC: {
+        IRCarrierAc ac(0, carrier_ac_remote_model_t::CARRIER_AC, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case LG: {
+        IRLgAc ac(0, lg_ac_remote_model_t::LG676, false, true);
+        ac.begin(); ac.setModel(lg_ac_remote_model_t::LG676);
+        ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case TOSHIBA_AC: {
+        IRToshibaAC ac(0, toshiba_ac_remote_model_t::TOSHIBA_AC, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    case ELECTRA_AC: {
+        IRElectraAc ac(0, electra_ac_remote_model_t::ELECTRA_AC, false, true);
+        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        captureAc(ac, r.timing); break;
+    }
+    default:
+        r.timing.clear(); break;
+    }
 
-    s->saveTiming();
-    r.timing = s->timing;
-    if (!strcmp(brand,"panasonic")) r.carrier_freq = 36700;
-    if (!strcmp(brand,"whirlpool")) r.carrier_freq = 38400;
     return r;
 }
 
