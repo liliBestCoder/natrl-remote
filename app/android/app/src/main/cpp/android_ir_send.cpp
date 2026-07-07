@@ -1,5 +1,6 @@
-// Enable virtual methods in IRsend (IRremoteESP8266 hides them without TEST/UNIT_TEST)
-#define UNIT_TEST 1
+// Enable virtual methods in IRsend (guarded by TEST || UNIT_TEST in IRsend.h)
+// Use TEST not UNIT_TEST — UNIT_TEST pulls in IRsend_test.h which we don't have
+#define TEST 1
 
 #include "android_ir_send.h"
 #include "arduino_stub/Arduino.h"
@@ -30,11 +31,9 @@
 class CaptureIRsend : public IRsend {
 public:
     std::vector<uint32_t> timing;
-    decode_results capture;  // needed by IRac UNIT_TEST macro
 
     CaptureIRsend() : IRsend(0, false, true), _on(false) {
         timing.reserve(2048);
-        capture.decode_type = UNKNOWN;
     }
 
     void _delayMicroseconds(uint32_t usec) override {
@@ -43,9 +42,6 @@ public:
 
     void ledOn()  override { _on = true; }
     void ledOff() override { _on = false; }
-
-    // Stub for IRac UNIT_TEST macro (never called: _utReceiver is always nullptr)
-    void makeDecodeResult(uint16_t = 0) {}
 
 private:
     bool _on;
