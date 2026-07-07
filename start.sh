@@ -7,13 +7,11 @@ set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$PROJECT_DIR/backend"
-WAVEFORM_DIR="$PROJECT_DIR/waveform-engine"
 
 # ─── Config ────────────────────────────────────────────────
 MYSQL_DATADIR="${MYSQL_DATADIR:-/var/lib/mysql}"
 REDIS_PORT=6379
 BACKEND_PORT=3000
-WAVEFORM_PORT=8001
 
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -30,28 +28,22 @@ mkdir -p "$PID_DIR" "$LOG_DIR"
 
 # ─── Stop ──────────────────────────────────────────────────
 do_stop() {
-    log "Stopping all services..."
+    log "Stopping backend..."
 
-    # Stop by process name (not port)
-    for name in "mysqld" "redis-server" "uvicorn" "tsx"; do
-        for pid in $(pgrep -f "$name" 2>/dev/null); do
-            if [ -n "$pid" ]; then
-                kill "$pid" 2>/dev/null && log "  Stopped $name (pid $pid)"
-            fi
-        done
+    # Kill backend by process name
+    for pid in $(pgrep -f "tsx.*server\.ts" 2>/dev/null); do
+        kill "$pid" 2>/dev/null && log "  Stopped backend (pid $pid)"
     done
 
-    # Clean up pid files
-    rm -f "$PID_DIR"/*.pid
+    # Clean up pid file
+    rm -f "$PID_DIR/backend.pid"
 
-    # Final cleanup: kill any remaining on our ports as fallback
-    for port in $BACKEND_PORT $WAVEFORM_PORT; do
-        for pid in $(lsof -ti:$port 2>/dev/null); do
-            kill "$pid" 2>/dev/null && log "  Killed leftover on port $port (pid $pid)"
-        done
+    # Fallback: kill any leftover on backend port
+    for pid in $(lsof -ti:$BACKEND_PORT 2>/dev/null); do
+        kill "$pid" 2>/dev/null && log "  Killed leftover on port $BACKEND_PORT (pid $pid)"
     done
 
-    log "All services stopped."
+    log "Backend stopped. MySQL & Redis left running."
 }
 
 # ─── Status ────────────────────────────────────────────────
@@ -85,12 +77,10 @@ do_status() {
     echo -e "  ${CYAN}Processes:${NC}"
     check_proc "mysql"    "$PID_DIR/mysql.pid"
     check_proc "redis"    "$PID_DIR/redis.pid"
-    check_proc "waveform" "$PID_DIR/waveform.pid"
     check_proc "backend"  "$PID_DIR/backend.pid"
     echo ""
     echo -e "  ${CYAN}Endpoints:${NC}"
     check_api "backend"  "http://localhost:3000/health"
-    check_api "waveform" "http://localhost:8001/health"
     if mysqladmin ping -u root --silent 2>/dev/null; then
         echo -e "  ${GREEN}●${NC} mysql — localhost:3306"
     else
@@ -157,44 +147,26 @@ start_redis() {
     fi
 }
 
-# ─── Start Waveform Engine ─────────────────────────────────
-start_waveform() {
-    if curl -s --max-time 2 http://localhost:$WAVEFORM_PORT/health &>/dev/null; then
-        info "Waveform engine already running"
-        return 0
-    fi
-    log "Starting Waveform Engine..."
-    cd "$WAVEFORM_DIR"
-    nohup env DATABASE_URL="mysql+pymysql://natrl:natrl_dev@127.0.0.1:3306/natrl" uvicorn server:app --host 0.0.0.0 --port $WAVEFORM_PORT \
-        &>"$LOG_DIR/waveform.log" &
-    echo $! > "$PID_DIR/waveform.pid"
-
-    for i in $(seq 1 15); do
-        if curl -s http://localhost:$WAVEFORM_PORT/health &>/dev/null; then
-            log "  Waveform ready (pid $(cat $PID_DIR/waveform.pid))"
-            cd "$PROJECT_DIR"
-            return 0
-        fi
-        sleep 1
-    done
-    warn "Waveform engine may still be starting (check $LOG_DIR/waveform.log)"
-    cd "$PROJECT_DIR"
-}
-
 # ─── Start Backend ─────────────────────────────────────────
 start_backend() {
-    if curl -s --max-time 2 http://localhost:$BACKEND_PORT/health &>/dev/null; then
-        info "Backend already running"
-        return 0
+    # Kill any running backend by process name (tsx running server.ts)
+    local old_pids=$(pgrep -f "tsx.*server\.ts" 2>/dev/null)
+    if [ -n "$old_pids" ]; then
+        for pid in $old_pids; do
+            kill "$pid" 2>/dev/null && log "  Killed old backend (pid $pid)"
+        done
+        sleep 1
     fi
+
     log "Starting Backend..."
     cd "$BACKEND_DIR"
     nohup npx tsx src/server.ts &>"$LOG_DIR/backend.log" &
-    echo $! > "$PID_DIR/backend.pid"
+    local new_pid=$!
+    echo "$new_pid" > "$PID_DIR/backend.pid"
 
     for i in $(seq 1 20); do
-        if curl -s http://localhost:$BACKEND_PORT/health &>/dev/null; then
-            log "  Backend ready (pid $(cat $PID_DIR/backend.pid))"
+        if curl -s --max-time 2 http://localhost:$BACKEND_PORT/health &>/dev/null; then
+            log "  Backend ready (pid $new_pid)"
             cd "$PROJECT_DIR"
             return 0
         fi
@@ -255,22 +227,18 @@ case "$CMD" in
         echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
         echo ""
 
-        # 1. MySQL
+        # 1. MySQL — keep alive if running
         log "─────────── MySQL ───────────"
         start_mysql
 
-        # 2. Init DB (first run)
+        # 2. Init DB (first run only)
         init_db
 
-        # 3. Redis
+        # 3. Redis — keep alive if running
         log "─────────── Redis ───────────"
         start_redis
 
-        # 4. Waveform Engine
-        log "──────── Waveform Engine ────────"
-        start_waveform
-
-        # 5. Backend
+        # 4. Backend — always kill old and restart
         log "────────── Backend ──────────"
         start_backend
 
@@ -279,7 +247,6 @@ case "$CMD" in
         echo -e "${GREEN}  All services started!${NC}"
         echo ""
         echo -e "  Backend:     ${CYAN}http://localhost:3000/health${NC}"
-        echo -e "  Waveform:    ${CYAN}http://localhost:8001/health${NC}"
         echo -e "  MySQL:       ${CYAN}localhost:3306 (natrl/natrl_dev)${NC}"
         echo -e "  Redis:       ${CYAN}localhost:6379${NC}"
         echo ""
