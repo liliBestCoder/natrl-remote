@@ -10,6 +10,7 @@ function getPool(): mysql.Pool {
   if (!pool) {
     pool = mysql.createPool({
       uri: process.env.DATABASE_URL || "mysql://natrl:natrl_dev@127.0.0.1:3306/natrl",
+      charset: "utf8mb4",
     });
   }
   return pool;

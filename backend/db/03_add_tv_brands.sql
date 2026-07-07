@@ -1,3 +1,6 @@
+-- Fix charset for Chinese aliases
+SET NAMES utf8mb4;
+
 -- Add aliases and device_type columns
 ALTER TABLE ir_protocols ADD COLUMN IF NOT EXISTS aliases JSON NULL AFTER brand_name;
 ALTER TABLE ir_protocols ADD COLUMN IF NOT EXISTS device_type VARCHAR(16) NOT NULL DEFAULT 'ac' AFTER aliases;
