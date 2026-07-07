@@ -95,15 +95,10 @@ ir_timing_result AndroidIRsend::encodeAC(
     switch (proto) {
     case WHIRLPOOL_AC: {
         IRWhirlpoolAc ac(0, false, true);
-        ac.begin();
-        ac.setModel(whirlpool_ac_remote_model_t::DG11J191);
-        ac.setMode(ac.convertMode(m));
-        ac.setTemp(temp);
-        ac.setFan(ac.convertFan(f));
-        ac.setPowerToggle(true);
-        ac.send();
-        captureAc(ac, r.timing);
-        r.carrier_freq = 38400; break;
+        ac.begin(); ac.setModel(whirlpool_ac_remote_model_t::DG11J191);
+        ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        ac.setFan(ac.convertFan(f)); ac.setPowerToggle(true); ac.send();
+        captureAc(ac, r.timing); r.carrier_freq = 38400; break;
     }
     case GREE: {
         IRGreeAC ac(0, gree_ac_remote_model_t::YAW1F, false, true);
@@ -112,50 +107,50 @@ ir_timing_result AndroidIRsend::encodeAC(
         captureAc(ac, r.timing); break;
     }
     case MIDEA: {
-        IRMideaAC ac(0, midea_ac_remote_model_t::KAYELU_A2, false, true);
+        IRMideaAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case HAIER_AC: {
-        IRHaierAC ac(0, haier_ac_remote_model_t::V9014557_A, false, true);
+        IRHaierAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case TCL112AC: {
-        IRTcl112Ac ac(0, tcl112_ac_remote_model_t::TAC09CHSD, false, true);
+        IRTcl112Ac ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case KELON: {
-        IRKelvinatorAC ac(0, kelvinator_ac_remote_model_t::KELVINATOR, false, true);
+        IRKelvinatorAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case PANASONIC_AC: {
-        IRPanasonicAc ac(0, panasonic_ac_remote_model_t::kPanasonicLke, false, true);
+        IRPanasonicAc ac(0, false, true);
         ac.begin(); ac.setModel(panasonic_ac_remote_model_t::kPanasonicLke);
         ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); r.carrier_freq = 36700; break;
     }
     case COOLIX: {
-        IRCoolixAC ac(0, coolix_ac_remote_model_t::COOLIX, false, true);
+        IRCoolixAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case DAIKIN: {
-        IRDaikinESP ac(0, daikin_esp_ac_remote_model_t::DAIKIN_ESP, false, true);
+        IRDaikinESP ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case MITSUBISHI_AC: {
-        IRMitsubishiAC ac(0, mitsubishi_ac_remote_model_t::MITSUBISHI_AC, false, true);
+        IRMitsubishiAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
@@ -167,38 +162,39 @@ ir_timing_result AndroidIRsend::encodeAC(
         captureAc(ac, r.timing); break;
     }
     case HITACHI_AC: {
-        IRHitachiAC ac(0, hitachi_ac_remote_model_t::R_LT0541_HTA_A, false, true);
+        IRHitachiAc ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case SAMSUNG_AC: {
-        IRSamsungAc ac(0, samsung_ac_remote_model_t::SAMSUNG_AC, false, true);
+        IRSamsungAc ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case CARRIER_AC: {
-        IRCarrierAc ac(0, carrier_ac_remote_model_t::CARRIER_AC, false, true);
+        IRCarrierAc64 ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case LG: {
-        IRLgAc ac(0, lg_ac_remote_model_t::LG676, false, true);
+        IRLgAc ac(0, false, true);
         ac.begin(); ac.setModel(lg_ac_remote_model_t::LG676);
         ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case TOSHIBA_AC: {
-        IRToshibaAC ac(0, toshiba_ac_remote_model_t::TOSHIBA_AC, false, true);
-        ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
+        IRToshibaAC ac(0, false, true);
+        ac.begin(); ac.setModel(toshiba_ac_remote_model_t::TOSHIBA_AC);
+        ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case ELECTRA_AC: {
-        IRElectraAc ac(0, electra_ac_remote_model_t::ELECTRA_AC, false, true);
+        IRElectraAc ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
