@@ -592,9 +592,8 @@ export default function HomeScreen() {
               onPressIn={handlePressIn}
               onPressOut={handlePressOut}
               delayLongPress={0}>
-              <Text style={styles.vIcon}>{listening ? "⏺" : voiceBlocked ? "🔇" : "🎙️"}</Text>
               <Text style={styles.vText}>
-                {listening ? "正在聆听...松开发送"
+                {listening ? "⏺ 聆听中...松开发送"
                   : voiceBlocked ? "已阻止（点我重试）"
                   : "按住说话"}
               </Text>
