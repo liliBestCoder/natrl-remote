@@ -87,14 +87,9 @@ export function buildStateContext(session: SessionState): string {
       if (session.deviceType && session.room) {
         const typeName = session.deviceType === "ac" ? "空调" : session.deviceType;
         lines.push(`已识别: ${typeName}, 房间: ${session.room}`);
-        if (!session.probingActive && !session.matchedBrand) {
-          if (!session.brandHint) {
-            lines.push("必须主动询问品牌（如'请问是什么品牌？格力、美的？'），不要跳过这一步");
-          }
-        }
       }
       if (session.brandHint) {
-        lines.push(`用户提到品牌: ${session.brandHint}`);
+        lines.push(`用户提到品牌: ${session.brandHint} → 应立即调用 probe_brand`);
       }
       if (session.probingActive) {
         lines.push(`探测中: 第${session.probeStep}/${session.probeTotal}个 (${session.currentProbeBrand || "?"})`);
