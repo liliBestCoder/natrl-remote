@@ -1,3 +1,6 @@
+// Enable virtual methods in IRsend (IRremoteESP8266 hides them without TEST/UNIT_TEST)
+#define UNIT_TEST 1
+
 #include "android_ir_send.h"
 #include "arduino_stub/Arduino.h"
 #include "IRremoteESP8266.h"
