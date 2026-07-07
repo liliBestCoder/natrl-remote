@@ -18,7 +18,16 @@ class InfraredEncoderModule(reactContext: ReactApplicationContext) :
 
     companion object {
         init {
-            System.loadLibrary("natrl_ir")
+            try {
+                System.loadLibrary("natrl_ir")
+            } catch (e: UnsatisfiedLinkError) {
+                // Fallback: try SoLoader (React Native's native lib loader)
+                try {
+                    com.facebook.soloader.SoLoader.loadLibrary("natrl_ir")
+                } catch (e2: UnsatisfiedLinkError) {
+                    android.util.Log.e("InfraredEncoder", "Failed to load libnatrl_ir.so", e2)
+                }
+            }
         }
     }
 
