@@ -55,6 +55,29 @@ export default function HomeScreen() {
   const [necCmd, setNecCmd] = useState("");
   const [necResult, setNecResult] = useState<string | null>(null);
 
+  // Compare C++ native vs JS encoding
+  const handleTestNativeTV = async () => {
+    setNecResult("调用原生编码中...");
+    try {
+      const { NativeModules } = require("react-native");
+      const enc = NativeModules.InfraredEncoder;
+      if (!enc) { setNecResult("❌ InfraredEncoder 未加载"); return; }
+      const result = await enc.encodeTV("changhong", "power");
+      const pat = result.pattern;
+      setNecResult(`[原生C++] freq=${result.carrierFreq}Hz len=${pat.length}\n前14: ${pat.slice(0, 14).join(", ")}`);
+    } catch (e: any) {
+      setNecResult(`❌ ${e.message}`);
+    }
+    setTimeout(() => setNecResult(null), 20000);
+  };
+
+  const handleTestJSNEC = () => {
+    const { buildNecPattern } = require("../services/ir-emitter");
+    const pat = buildNecPattern(0x40, 0x12);
+    setNecResult(`[JS调试] addr=0x40 cmd=0x12 len=${pat.length}\n前14: ${pat.slice(0, 14).join(", ")}`);
+    setTimeout(() => setNecResult(null), 20000);
+  };
+
   const handleSendNEC = async () => {
     const addr = parseInt(necAddr.trim(), 16);
     const cmd = parseInt(necCmd.trim(), 16);
@@ -470,6 +493,15 @@ export default function HomeScreen() {
       </TouchableOpacity>
       {showDebug && (
         <View style={styles.debugPanel}>
+          {/* Compare native vs JS encoding */}
+          <View style={styles.debugRowBtns}>
+            <TouchableOpacity style={styles.debugBtnSm} onPress={handleTestNativeTV}>
+              <Text style={styles.debugBtnText}>🔬 C++原生编码</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.debugBtnSm} onPress={handleTestJSNEC}>
+              <Text style={styles.debugBtnText}>📐 JS编码</Text>
+            </TouchableOpacity>
+          </View>
           <View style={styles.debugRow}>
             <Text style={styles.debugLabel}>NEC 地址 (hex):</Text>
             <TextInput
@@ -660,6 +692,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#161b22", borderRadius: 12, padding: 12,
     borderColor: "#30363d", borderWidth: 1, marginTop: 4,
   },
+  debugRowBtns: { flexDirection: "row", gap: 8, marginBottom: 10 },
+  debugBtnSm: {
+    flex: 1, backgroundColor: "#21262d", borderRadius: 8, paddingVertical: 8,
+    alignItems: "center", borderColor: "#30363d", borderWidth: 1,
+  },
+  debugBtnText: { color: "#58a6ff", fontSize: 13, fontWeight: "600" },
   debugRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   debugLabel: { color: "#8b949e", fontSize: 13, width: 100 },
   debugInput: {
