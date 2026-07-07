@@ -204,6 +204,36 @@ export async function processInput(
     break;
   }
 
+  // ── Post-loop check: LLM text-replied in control phase without calling a tool ──
+  // The LLM sometimes "hallucinates" an IR execution message ("已发送红外指令")
+  // without actually calling the tool. Detect and force one retry.
+  if (!ctx.toolCall && ctx.phase === "control" && hasCommandIntent(userInput)) {
+    console.log(`[nlp] ⚠️ 控制阶段LLM未调用工具，追加强制重试`);
+    messages.push({
+      role: "system",
+      content: "⛔ 你刚才没有调用任何函数！用户要求控制设备，你必须调用 control_ac 或 control_tv 函数来发射红外。绝对禁止只用文字回复！现在立即调用正确的函数。"
+    });
+    const retryResponse = await callDeepSeek(messages);
+    const retryChoice = retryResponse.choices[0];
+    if (retryChoice.finish_reason === "tool_calls") {
+      const toolCalls = retryChoice.message.tool_calls || [];
+      for (const tc of toolCalls) {
+        const fnName = tc.function.name;
+        let fnArgs: any = {};
+        try { fnArgs = JSON.parse(tc.function.arguments); } catch (_) { fnArgs = {}; }
+        console.log(`[nlp] 🔄 重试 → tool_call: ${fnName}(${JSON.stringify(fnArgs)})`);
+        const toolResult = await executeToolCall(fnName, fnArgs, ctx);
+        console.log(`[nlp] 重试结果: ${toolResult}`);
+        if (ctx.toolCall) {
+          ctx.message = retryChoice.message.content || ctx.toolCall.message || "";
+          break;
+        }
+      }
+    } else {
+      console.log(`[nlp] 重试仍然失败: ${retryChoice.finish_reason}`);
+    }
+  }
+
   // ── Save assistant reply to history ──
   const finalMessage = ctx.message || "抱歉，我不太明白你的意思，换个说法试试？";
   addAssistantMessage(userId, finalMessage);
@@ -228,6 +258,24 @@ export async function processInput(
   }
 
   return result;
+}
+
+// ─── Command intent detection ──────────────────────────────────────
+
+function hasCommandIntent(text: string): boolean {
+  const cmdPatterns = [
+    /开|关|打开|关闭|关机|开机/,
+    /音量|声音|大声|小声|调大|调小|调高|调低/,
+    /静音|消音/,
+    /换台|频道|上一个|下一个/,
+    /信号源|HDMI|输入/,
+    /菜单|设置|返回|退出|主页|首页/,
+    /确认|OK|确定/,
+    /上|下|左|右/,
+    /温度|制冷|制热|除湿|送风|风大|风小|风速/,
+    /调到|调成|改成/,
+  ];
+  return cmdPatterns.some(p => p.test(text));
 }
 
 // ─── DeepSeek API Call ──────────────────────────────────────────────
