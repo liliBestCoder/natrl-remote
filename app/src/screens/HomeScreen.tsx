@@ -52,6 +52,7 @@ export default function HomeScreen() {
   const [voiceBlocked, setVoiceBlocked] = useState(false);
   const recognitionRef = useRef<any>(null);
   const pressingRef = useRef(false); // track press gesture
+  const lastTranscriptRef = useRef(""); // track latest speech result
 
   // Debug panel: raw NEC transmitter
   const [showDebug, setShowDebug] = useState(false);
@@ -108,17 +109,15 @@ export default function HomeScreen() {
       setVoiceSupported(true);
 
       // ═══ listening state is 100% controlled by press gesture ═══
-      // Only handlePressIn / handlePressOut / onResult(isFinal) change it.
-      // All other events (audiostart, end, error) NEVER touch listening.
-      // This eliminates the flicker loop completely.
       const onResult = (e: ExpoSpeechRecognitionResultEvent) => {
-        if (e.results?.[0]?.transcript) {
-          const text = e.results[0].transcript;
-          console.log("[voice] native result:", text, "isFinal:", e.isFinal);
+        const text = e.results?.[0]?.transcript;
+        if (text) {
+          lastTranscriptRef.current = text;
+          console.log("[voice] result:", text, "isFinal:", e.isFinal);
           if (e.isFinal) {
+            // Final result → send immediately
             ExpoSpeechRecognitionModule.stop();
             handleSend(text);
-            // handleSend will trigger handlePressOut → setListening(false)
           }
         }
       };
@@ -247,21 +246,6 @@ export default function HomeScreen() {
       try { ExpoSpeechRecognitionModule.stop(); } catch (_e) {}
     }
   }, []);
-
-  // Hold-to-talk handlers
-  const handlePressIn = useCallback(() => {
-    if (textMode) return; // don't voice in text mode
-    pressingRef.current = true;
-    setListening(true);
-    // Must call synchronously within user gesture — setTimeout breaks it
-    startVoice();
-  }, [textMode, startVoice]);
-
-  const handlePressOut = useCallback(() => {
-    pressingRef.current = false;
-    stopVoice();
-    setListening(false);
-  }, [stopVoice]);
 
   // === SEND ===
   const handleSend = async (textOverride?: string) => {
@@ -400,6 +384,24 @@ export default function HomeScreen() {
     }
     setLoading(false);
   };
+
+  // Hold-to-talk handlers — must be after handleSend
+  const handlePressIn = useCallback(() => {
+    if (textMode) return;
+    pressingRef.current = true;
+    lastTranscriptRef.current = "";
+    setListening(true);
+    startVoice();
+  }, [textMode, startVoice]);
+
+  const handlePressOut = useCallback(() => {
+    pressingRef.current = false;
+    stopVoice();
+    setListening(false);
+    const text = lastTranscriptRef.current.trim();
+    lastTranscriptRef.current = "";
+    if (text) handleSend(text);
+  }, [stopVoice]);
 
   const activeDevice = devices.find((d) => d.verified);
   const isTV = activeDevice?.deviceType === "tv";
