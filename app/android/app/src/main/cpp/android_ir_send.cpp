@@ -115,7 +115,7 @@ ir_timing_result AndroidIRsend::encodeAC(
     case HAIER_AC: {
         IRHaierAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
-        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        ac.setFan(ac.convertFan(f)); ac.setCommand(1); ac.send();
         captureAc(ac, r.timing); break;
     }
     case TCL112AC: {
@@ -127,7 +127,8 @@ ir_timing_result AndroidIRsend::encodeAC(
     case KELON: {
         IRKelvinatorAC ac(0, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
-        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        { uint8_t kfan = 3; if(f==stdAc::fanspeed_t::kLow) kfan=0; else if(f==stdAc::fanspeed_t::kMedium) kfan=1; else if(f==stdAc::fanspeed_t::kHigh) kfan=2; ac.setFan(kfan); }
+        ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case PANASONIC_AC: {
@@ -158,7 +159,7 @@ ir_timing_result AndroidIRsend::encodeAC(
     case FUJITSU_AC: {
         IRFujitsuAC ac(0, fujitsu_ac_remote_model_t::ARRAH2E, false, true);
         ac.begin(); ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
-        ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
+        ac.setFanSpeed(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case HITACHI_AC: {
@@ -181,14 +182,14 @@ ir_timing_result AndroidIRsend::encodeAC(
     }
     case LG: {
         IRLgAc ac(0, false, true);
-        ac.begin(); ac.setModel(lg_ac_remote_model_t::LG676);
+        ac.begin(); ac.setModel(lg_ac_remote_model_t::GE6711AR2853M);
         ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
     }
     case TOSHIBA_AC: {
         IRToshibaAC ac(0, false, true);
-        ac.begin(); ac.setModel(toshiba_ac_remote_model_t::TOSHIBA_AC);
+        ac.begin(); ac.setModel(toshiba_ac_remote_model_t::kToshibaGenericRemote_A);
         ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPower(true); ac.send();
         captureAc(ac, r.timing); break;
