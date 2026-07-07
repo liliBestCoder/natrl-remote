@@ -240,7 +240,7 @@ ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command)
         s->sendRC5((tv->address << 6) | (cmd & 0x3F), 12);
         break;
     default:
-        s->sendNEC(buildNEC(0x00, 0x12));
+        s->sendNEC(s->encodeNEC(0x00, 0x12));
         break;
     }
 
