@@ -11,9 +11,8 @@ include_directories(
     "${IR_ESP_SRC}"
 )
 
-# Compile IRremoteESP8266 .cpp files (exclude IRrecv — ESP hardware only, we encode only)
+# Compile ALL .cpp files from IRremoteESP8266 src/
 file(GLOB IR_SOURCES "${IR_ESP_SRC}/*.cpp")
-list(REMOVE_ITEM IR_SOURCES "${IR_ESP_SRC}/IRrecv.cpp")
 
 # Our code
 set(NATRL_SOURCES
