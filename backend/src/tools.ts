@@ -594,6 +594,7 @@ async function execRespondProbe(
 
     ctx.phase = "control";
     ctx.session.phase = "control";
+    ctx.session.deviceType = deviceTypeStr;
     ctx.session.matchedBrand = currentStep.brandCode;
     ctx.session.probingActive = false;
     ctx.setupStep = undefined;
@@ -903,13 +904,19 @@ async function execControlTv(
   let deviceId = args.device_id;
   if (!deviceId) {
     const devices = await getUserDevices(ctx.userId);
-    const verified = devices.filter((d) => d.verified && d.deviceType === "tv");
+    // Prefer TV-type device, but fall back to any verified device.
+    // This handles edge cases where device_type in MySQL may be stale/wrong.
+    let verified = devices.filter((d) => d.verified && d.deviceType === "tv");
+    if (verified.length === 0) {
+      verified = devices.filter((d) => d.verified);
+    }
     if (verified.length === 0) {
       return JSON.stringify({
-        error: "没有已就绪的电视。请先说'我客厅有个电视'来添加设备。",
+        error: "没有已就绪的设备。请先说'我客厅有个电视'来添加设备。",
       });
     }
     deviceId = verified[0].id;
+    console.log(`[control_tv] using device ${deviceId} (type=${verified[0].deviceType})`);
   }
 
   const device = await getDevice(deviceId);

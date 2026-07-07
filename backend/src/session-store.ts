@@ -113,7 +113,7 @@ export function buildStateContext(session: SessionState): string {
       lines.push("[当前阶段: 阶段3 — 日常使用]");
       lines.push("设备已就绪。收到用户指令时必须调用对应函数：");
       if (session.deviceType === "tv") {
-        lines.push("  电视: power/vol_up/vol_down/ch_up/ch_down/mute/input/up/down/left/right/ok/menu/back/exit/home/info");
+        lines.push("  电视: control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\")");
       } else {
         lines.push("  空调: control_ac(power:/temperature:/mode:/fan_speed:)");
       }
