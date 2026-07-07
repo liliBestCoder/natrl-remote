@@ -353,6 +353,17 @@ ir_timing_result AndroidIRsend::encodeTV(const char* brand, const char* command)
     }
 
     s->saveTiming();
+
+    // ── Append NEC repeat frame for reliability ──
+    // Many TVs require the command to be repeated to reliably register.
+    // NEC repeat: 40ms gap + 9ms mark + 2.25ms space + 560µs stop bit.
+    if (tv->protocol == NEC && !s->timing.empty()) {
+        s->timing.push_back(40000);  // 40ms space before repeat
+        s->timing.push_back(9000);   // repeat header mark
+        s->timing.push_back(2250);   // repeat header space
+        s->timing.push_back(560);    // repeat stop bit
+    }
+
     r.timing = s->timing;
     return r;
 }

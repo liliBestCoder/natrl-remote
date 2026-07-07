@@ -571,13 +571,15 @@ async function execRespondProbe(
 
     const now = new Date().toISOString();
     const room = ctx.session.room || "卧室";
-    const devName = ctx.session.pendingDeviceName || `${room}空调`;
+    const deviceTypeStr = (ctx.session.deviceType as Device["deviceType"]) || "ac";
+    const typeWord = deviceTypeStr === "tv" ? "电视" : "空调";
+    const devName = ctx.session.pendingDeviceName || `${room}${typeWord}`;
     const newDevice: Device = {
       id: deviceId,
       userId: ctx.userId,
       room,
       name: devName,
-      deviceType: (ctx.session.deviceType as Device["deviceType"]) || "ac",
+      deviceType: deviceTypeStr,
       brandCode: currentStep.brandCode,
       protocol: "NEC",
       mqttTopic: `home/${room}/${deviceId}`,

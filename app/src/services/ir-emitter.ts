@@ -256,11 +256,20 @@ export async function encodeAndEmitTV(
       console.log(`[ir-emitter] ✅ TV encode: ${pattern.length} pulses @ ${carrierFreq}Hz`);
 
       if (Platform.OS === "android" && InfraredEmitter) {
-        const ok = await InfraredEmitter.transmit(carrierFreq, pattern);
-        if (ok) {
-          console.log("[ir-emitter] ✅ TV emitted via Android IR blaster");
-          return { success: true, method: "android_native" };
+        // Transmit 3 times with 45ms gap for reliability.
+        // Many TVs require the NEC command to be repeated to register.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const ok = await InfraredEmitter.transmit(carrierFreq, pattern);
+          if (!ok && attempt === 0) {
+            console.warn("[ir-emitter] ⚠️ TV transmit failed on first attempt");
+            return { success: false, method: "no_hardware" };
+          }
+          if (attempt < 2) {
+            await new Promise(resolve => setTimeout(resolve, 45));
+          }
         }
+        console.log("[ir-emitter] ✅ TV emitted x3 via Android IR blaster");
+        return { success: true, method: "android_native" };
       }
       return { success: false, method: "no_hardware" };
     } catch (e: any) {

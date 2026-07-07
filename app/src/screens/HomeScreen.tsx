@@ -43,6 +43,7 @@ export default function HomeScreen() {
   const [probeBrand, setProbeBrand] = useState("");
   const [probeStep, setProbeStep] = useState(0);
   const [probeTotal, setProbeTotal] = useState(0);
+  const [probeDeviceType, setProbeDeviceType] = useState<string>("ac");
 
   // Voice mode (default) vs text mode
   const [textMode, setTextMode] = useState(false);
@@ -50,6 +51,7 @@ export default function HomeScreen() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const pressingRef = useRef(false); // track press gesture
 
   // Debug panel: raw NEC transmitter
   const [showDebug, setShowDebug] = useState(false);
@@ -108,9 +110,10 @@ export default function HomeScreen() {
       const onResult = (e: ExpoSpeechRecognitionResultEvent) => {
         if (e.results?.[0]?.transcript) {
           const text = e.results[0].transcript;
-          console.log("[voice] native result:", text);
-          setListening(false);
-          if (e.isFinal || !e.isFinal) { // always send, but only once
+          console.log("[voice] native result:", text, "isFinal:", e.isFinal);
+          if (e.isFinal) {
+            setListening(false);
+            ExpoSpeechRecognitionModule.stop();
             handleSend(text);
           }
         }
@@ -123,7 +126,23 @@ export default function HomeScreen() {
         }
       };
       const onStart = () => setListening(true);
-      const onEnd = () => setListening(false);
+      // When recognizer ends (timeout / no speech), restart if user still pressing.
+      // This prevents the "聆听中 → 按住说话" flash when recognizer times out.
+      const onEnd = () => {
+        console.log("[voice] native end event, pressing:", pressingRef.current);
+        if (pressingRef.current) {
+          // User still holding → restart recognizer
+          try {
+            ExpoSpeechRecognitionModule.start({
+              lang: "zh-CN",
+              interimResults: true,
+              continuous: false,
+            });
+          } catch (e: any) {
+            console.log("[voice] restart error:", e);
+          }
+        }
+      };
 
       ExpoSpeechRecognitionModule.addListener("result", onResult);
       ExpoSpeechRecognitionModule.addListener("error", onError);
@@ -230,7 +249,7 @@ export default function HomeScreen() {
         }
         ExpoSpeechRecognitionModule.start({
           lang: "zh-CN",
-          interimResults: false,
+          interimResults: true,
           continuous: false,
         });
       } catch (e: any) {
@@ -253,12 +272,14 @@ export default function HomeScreen() {
   // Hold-to-talk handlers
   const handlePressIn = useCallback(() => {
     if (textMode) return; // don't voice in text mode
+    pressingRef.current = true;
     setListening(true);
     // Must call synchronously within user gesture — setTimeout breaks it
     startVoice();
   }, [textMode, startVoice]);
 
   const handlePressOut = useCallback(() => {
+    pressingRef.current = false;
     stopVoice();
     setListening(false);
   }, [stopVoice]);
@@ -298,9 +319,10 @@ export default function HomeScreen() {
           const emitResults: string[] = [];
 
           // Detect TV probe (temperature=0, mode="") vs AC probe
-          const isTV = probeCmds.length === 1 && (probeCmds[0] as any).temperature === 0;
+          const isTVProbe = probeCmds.length === 1 && (probeCmds[0] as any).temperature === 0;
+          setProbeDeviceType(isTVProbe ? "tv" : "ac");
 
-          if (isTV) {
+          if (isTVProbe) {
             // TV probe: send power toggle once
             const cmd = probeCmds[0];
             const irResult = await encodeAndEmitTV(brandCode, "power");
@@ -400,7 +422,8 @@ export default function HomeScreen() {
     setLoading(false);
   };
 
-  const acDevice = devices.find((d) => d.verified);
+  const activeDevice = devices.find((d) => d.verified);
+  const isTV = activeDevice?.deviceType === "tv";
 
   // === RENDER: Setup ===
   if (setupStep) {
@@ -428,7 +451,7 @@ export default function HomeScreen() {
               ) : (
                 probeTotal > 0 && <Text style={styles.ptext}>第 {probeStep}/{probeTotal} 品牌</Text>
               )}
-              <Text style={styles.setupHintSmall}>观察空调，说"有反应"或"没反应"</Text>
+              <Text style={styles.setupHintSmall}>观察{probeDeviceType === "tv" ? "电视" : "空调"}，说"有反应"或"没反应"</Text>
             </>
           )}
           {setupStep === "verifying" && (
@@ -468,20 +491,32 @@ export default function HomeScreen() {
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" enabled={Platform.OS === "ios"}>
     <View style={[styles.outer, { paddingTop: insets.top + 16 }]}>
       <Text style={styles.hdr}>Natrl Remote</Text>
-      {acDevice ? (
+      {activeDevice ? (isTV ? (
         <View style={styles.card}>
-          <View style={styles.cIcon}><Text style={{ fontSize: 40 }}>❄️</Text></View>
+          <View style={styles.cIcon}><Text style={{ fontSize: 40 }}>📺</Text></View>
           <View style={styles.cInfo}>
-            <Text style={styles.cName}>{acDevice.name}</Text>
-            <Text style={styles.cRoom}>{acDevice.room}</Text>
+            <Text style={styles.cName}>{activeDevice.name}</Text>
+            <Text style={styles.cRoom}>{activeDevice.room}</Text>
             <View style={styles.cRow}>
-              <StateBadge label={acDevice.lastState.power ? "开" : "关"} active={acDevice.lastState.power} />
-              <StateBadge label={`${acDevice.lastState.temperature}°C`} active />
-              <StateBadge label={modeLabel(acDevice.lastState.mode)} active />
+              <StateBadge label={activeDevice.lastState.power ? "开" : "关"} active={activeDevice.lastState.power} />
+              <StateBadge label={activeDevice.brandCode || "TV"} active={!!activeDevice.brandCode} />
             </View>
           </View>
         </View>
       ) : (
+        <View style={styles.card}>
+          <View style={styles.cIcon}><Text style={{ fontSize: 40 }}>❄️</Text></View>
+          <View style={styles.cInfo}>
+            <Text style={styles.cName}>{activeDevice.name}</Text>
+            <Text style={styles.cRoom}>{activeDevice.room}</Text>
+            <View style={styles.cRow}>
+              <StateBadge label={activeDevice.lastState.power ? "开" : "关"} active={activeDevice.lastState.power} />
+              <StateBadge label={`${activeDevice.lastState.temperature}°C`} active />
+              <StateBadge label={modeLabel(activeDevice.lastState.mode)} active />
+            </View>
+          </View>
+        </View>
+      )) : (
         <View style={styles.empty}>
           <Text style={styles.empIcon}>🎙️</Text>
           <Text style={styles.empTitle}>还没有设备</Text>
@@ -607,7 +642,7 @@ export default function HomeScreen() {
     }
 
     // === TEXT MODE: input bar with voice switch on right ===
-    const ph = acDevice ? "输入指令..." : "比如：我卧室有个空调";
+    const ph = activeDevice ? "输入指令..." : "比如：我卧室有个空调";
     return (
       <View>
         <View style={styles.tBar}>
