@@ -94,16 +94,79 @@ ir_timing_result AndroidIRsend::encodeAC(
 
     switch (proto) {
     case WHIRLPOOL_AC: {
-        IRWhirlpoolAc ac(0, false, true);
-        ac.begin();
-        // Pick sub-model: default DG11J13A (more common), DG11J191 if specified
-        if (subModel && strstr(subModel, "DG11J191"))
-          ac.setModel(whirlpool_ac_remote_model_t::DG11J191);
-        else
-          ac.setModel(whirlpool_ac_remote_model_t::DG11J13A);
-        ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
-        ac.setFan(ac.convertFan(f)); ac.setPowerToggle(true); ac.send();
-        captureAc(ac, r.timing); r.carrier_freq = 38400; break;
+        // ─── ESPHome-style manual Whirlpool AC encoding ───
+        // ESPHome implementation port: builds 21-byte state by hand,
+        // sends as single continuous frame with dividers at bytes 6 & 14.
+        // Timing: 9000/4494 hdr, 572/1659/553 bits, 7960 divider gap.
+        // Reference: https://github.com/esphome/esphome/blob/dev/esphome/components/whirlpool/
+
+        bool is191 = subModel && strstr(subModel, "DG11J191");
+        uint8_t st[21] = {0};
+        st[0] = 0x83;  // fixed
+        st[1] = 0x06;  // fixed
+        st[6] = 0x80;  // light/clock default
+
+        // Model-specific
+        if (is191) { st[18] = 0x08; }
+
+        // Fan (bits 0-1 of byte 2): auto=0, high=1, med=2, low=3
+        uint8_t fanCode = 0;  // auto
+        if (f == stdAc::fanspeed_t::kLow)    fanCode = 3;
+        else if (f == stdAc::fanspeed_t::kMedium) fanCode = 2;
+        else if (f == stdAc::fanspeed_t::kHigh)   fanCode = 1;
+        st[2] |= (fanCode & 0x03);
+
+        // Mode (bits 0-2 of byte 3): heat=0, auto=1, cool=2, dry=3, fan=4
+        uint8_t modeCode = 2;  // cool
+        if (m == stdAc::opmode_t::kHeat)     modeCode = 0;
+        else if (m == stdAc::opmode_t::kAuto) modeCode = 1;
+        else if (m == stdAc::opmode_t::kDry)  modeCode = 3;
+        else if (m == stdAc::opmode_t::kFan)  modeCode = 4;
+        st[3] |= (modeCode & 0x07);
+
+        // Temperature (bits 4-7 of byte 3): temp = realTemp - minTemp
+        int minTemp = is191 ? 16 : 18;
+        int maxTemp = is191 ? 30 : 32;
+        if (temp < minTemp) temp = minTemp;
+        if (temp > maxTemp) temp = maxTemp;
+        st[3] |= (uint8_t)((temp - minTemp) << 4);
+
+        // Command (byte 15): 6=Mode, 1=Power, 0x17=6thSense
+        st[15] = 0x06;  // Mode command
+
+        // Checksum 1: XOR(bytes 2-12) → byte 13
+        for (int i = 2; i < 13; i++)
+            st[13] ^= st[i];
+        // Checksum 2: XOR(bytes 14-20) → byte 20
+        for (int i = 14; i < 20; i++)
+            st[20] ^= st[i];
+
+        // ─── Build raw 38kHz mark/space timing (ESPhome-style single frame) ───
+        CaptureIRsend* s = static_cast<CaptureIRsend*>(_irsend);
+        s->reset();
+        s->enableIROut(38000);
+
+        // Header: 9000 mark + 4494 space
+        s->mark(9000); s->space(4494);
+
+        // 21 bytes, LSB-first, with dividers after byte 6 and 14
+        for (int i = 0; i < 21; i++) {
+            for (int j = 0; j < 8; j++) {
+                s->mark(572);
+                bool bit = st[i] & (1 << j);
+                s->space(bit ? 1659 : 553);
+            }
+            if (i == 5 || i == 13) {  // after byte 6(0-5) and 14(0-13)
+                s->mark(572);
+                s->space(7960);
+            }
+        }
+        // Footer
+        s->mark(572);
+
+        s->saveTiming();
+        r.carrier_freq = 38000;
+        break;
     }
     case GREE: {
         IRGreeAC ac(0, gree_ac_remote_model_t::YAW1F, false, true);
