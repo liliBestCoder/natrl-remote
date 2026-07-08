@@ -116,16 +116,6 @@ export default function HomeScreen() {
         return;
       }
 
-      const keys = Object.keys(VR).join(", ");
-      VR.isAvailable?.()
-        .then((ok: boolean) => {
-          setVoiceAvailable(ok);
-          setDiag(`✅ 语音模块已加载\n方法: ${keys}\nisAvailable: ${ok}${ok ? '' : '\n⚠️ 系统无语音引擎，请启用小爱同学/智慧语音等'}`);
-        })
-        .catch((e: any) => {
-          setDiag(`⚠️ 语音模块已加载\n方法: ${keys}\nisAvailable 调用失败: ${e?.message || e}`);
-        });
-
       const emitter = new NativeEventEmitter(VR);
       emitter.addListener("voiceStart", () => setListening(true));
       emitter.addListener("voiceResult", (e: any) => {
@@ -242,9 +232,9 @@ export default function HomeScreen() {
         await VR.startListening("zh-CN");
       } catch (e: any) {
         if (e?.code === "NO_ENGINE") {
-          setDiag("❌ 系统语音引擎不可用 (NO_ENGINE)\n→ 请在手机设置中启用语音助手（小爱同学/智慧语音等）");
+          setDiag("❌ SpeechRecognizer 创建失败 (NO_ENGINE)\n→ 系统无可用的语音识别服务");
         } else {
-          setDiag(`❌ startListening 异常\ncode: ${e?.code || 'none'}\nmessage: ${e?.message || String(e)}`);
+          setDiag(`❌ startListening 失败\ncode: ${e?.code || 'none'}\nmessage: ${e?.message || String(e)}`);
         }
       }
     }
@@ -627,13 +617,9 @@ export default function HomeScreen() {
               </Text>
             </View>
           )}
-          {!voiceAvailable && (
+          {Platform.OS === "web" && !voiceAvailable && (
             <View style={styles.voiceNotice}>
-              <Text style={styles.voiceNoticeText}>
-                {Platform.OS === "web"
-                  ? "⚠️ 浏览器不支持语音，请用 Chrome"
-                  : "⚠️ 语音引擎不可用"}
-              </Text>
+              <Text style={styles.voiceNoticeText}>⚠️ 浏览器不支持语音，请用 Chrome</Text>
             </View>
           )}
           {/* Voice bar: same container style as text bar, mode switch inside */}
