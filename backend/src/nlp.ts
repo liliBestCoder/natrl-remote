@@ -284,12 +284,12 @@ function hasCommandIntent(text: string): boolean {
 
 async function callDeepSeek(messages: any[]): Promise<any> {
   const body: any = {
-    model: "deepseek-chat",
+    model: "deepseek-v4-pro",
     messages,
     tools: TOOL_DEFINITIONS,
     tool_choice: "auto",
-    temperature: 0.3,
-    max_tokens: 1024,
+    temperature: 0,
+    max_tokens: 2048,
   };
 
   const response = await fetch(
