@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Platform, Pressable, ScrollView,
-  KeyboardAvoidingView, PermissionsAndroid,
+  KeyboardAvoidingView, PermissionsAndroid, NativeEventEmitter,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
@@ -96,18 +96,42 @@ export default function HomeScreen() {
     setTimeout(() => setNecResult(null), 6000);
   };
 
-  // ── Voice Recognition setup ──
+  const lastTranscriptRef = useRef("");
+
+  // ── Voice Recognition setup (in-app SpeechRecognizer, no dialog, no IME) ──
   useEffect(() => {
     if (Platform.OS === "web") {
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       setVoiceSupported(!!SR);
     } else {
-      // Check if system RecognizerIntent is available (works on Chinese phones
-      // without Google services — uses iFlytek/Baidu/Sogou built-in recognition)
       const { NativeModules } = require("react-native");
       const VR = NativeModules.VoiceRecognition;
       if (VR?.isAvailable) {
-        VR.isAvailable().then((ok: boolean) => setVoiceSupported(ok));
+        VR.isAvailable().then((ok: boolean) => {
+          setVoiceSupported(ok);
+          console.log("[voice] engine available:", ok);
+        });
+        const emitter = new NativeEventEmitter(VR);
+        const onResult = (e: any) => {
+          if (e?.transcript) {
+            lastTranscriptRef.current = e.transcript;
+            console.log("[voice] result:", e.transcript, "final:", e.isFinal);
+            if (e.isFinal) {
+              setListening(false);
+              handleSend(e.transcript);
+            }
+          }
+        };
+        const onStart = () => setListening(true);
+        const onError = (e: any) => {
+          console.log("[voice] error:", e?.error);
+          setListening(false);
+          if (e?.error?.includes("权限")) setVoiceBlocked(true);
+        };
+        const subResult = emitter.addListener("voiceResult", onResult);
+        const subStart = emitter.addListener("voiceStart", onStart);
+        const subError = emitter.addListener("voiceError", onError);
+        return () => { subResult.remove(); subStart.remove(); subError.remove(); };
       } else {
         setVoiceSupported(false);
       }
@@ -192,38 +216,27 @@ export default function HomeScreen() {
         rec.start();
       } catch (_e: any) {}
     } else {
-      // ── Native: System RecognizerIntent (works on Chinese phones) ──
+      // ── Native: in-app SpeechRecognizer (no system dialog, no IME) ──
       try {
         const granted = await PermissionsAndroid.request(
           "android.permission.RECORD_AUDIO",
-          {
-            title: "麦克风权限",
-            message: "Natrl 需要麦克风权限来进行语音控制",
-            buttonPositive: "允许",
-            buttonNegative: "拒绝",
-          }
+          { title: "麦克风权限", message: "语音控制需要麦克风权限",
+            buttonPositive: "允许", buttonNegative: "拒绝" }
         );
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
           setVoiceBlocked(true);
-          addAssistantMsg("麦克风权限未授权，请在系统设置中允许。");
+          addAssistantMsg("麦克风权限未授权。");
           return;
         }
         const { NativeModules } = require("react-native");
         const VR = NativeModules.VoiceRecognition;
-        if (!VR) {
-          addAssistantMsg("语音模块未加载");
-          return;
-        }
-        const result = await VR.startListening("zh-CN");
-        if (result?.transcript) {
-          handleSend(result.transcript);
-        }
+        if (!VR) { addAssistantMsg("语音模块未加载"); return; }
+        await VR.startListening("zh-CN");
       } catch (e: any) {
-        if (e.code === "NO_ENGINE") {
+        console.log("[voice] error:", e?.message);
+        if (e?.code === "NO_ENGINE") {
           setVoiceBlocked(true);
-          addAssistantMsg("设备不支持语音识别，请安装讯飞/百度输入法");
-        } else if (e.code !== "CANCELLED") {
-          console.log("[voice] error:", e.message);
+          addAssistantMsg("设备不支持语音识别");
         }
       }
     }
@@ -232,11 +245,14 @@ export default function HomeScreen() {
   const stopVoice = useCallback(() => {
     if (Platform.OS === "web") {
       if (recognitionRef.current) recognitionRef.current.abort();
+    } else {
+      try {
+        const { NativeModules } = require("react-native");
+        NativeModules.VoiceRecognition?.stopListening();
+      } catch (_e) {}
     }
-    // Native RecognizerIntent is self-closing, no need to stop
   }, []);
 
-  // === SEND ===
   const handleSend = async (textOverride?: string) => {
     const text = (textOverride || input).trim();
     if (!text) return;
@@ -374,13 +390,20 @@ export default function HomeScreen() {
     setLoading(false);
   };
 
-  // Hold-to-talk handlers — must be after handleSend
-  // Voice button: tap to open system recognizer dialog
-  const handleVoicePress = useCallback(() => {
+  // Hold-to-talk handlers (after handleSend so closure captures it)
+  const handlePressIn = useCallback(() => {
     if (textMode) return;
+    lastTranscriptRef.current = "";
     setListening(true);
-    startVoice().finally(() => setListening(false));
+    startVoice();
   }, [textMode, startVoice]);
+
+  const handlePressOut = useCallback(() => {
+    stopVoice();
+    setListening(false);
+    const text = lastTranscriptRef.current.trim();
+    if (text) handleSend(text);
+  }, [stopVoice, textMode]);
 
   const activeDevice = devices.find((d) => d.verified);
   const isTV = activeDevice?.deviceType === "tv";
@@ -576,7 +599,9 @@ export default function HomeScreen() {
           {!voiceSupported && (
             <View style={styles.voiceNotice}>
               <Text style={styles.voiceNoticeText}>
-                ⚠️ 浏览器不支持语音，请用 Chrome
+                {Platform.OS === "web"
+                  ? "⚠️ 浏览器不支持语音，请用 Chrome"
+                  : "⚠️ 语音引擎不可用"}
               </Text>
             </View>
           )}
@@ -584,11 +609,12 @@ export default function HomeScreen() {
           <View style={styles.vBarRow}>
             <Pressable
               style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
-              onPress={handleVoicePress}>
+              onPressIn={handlePressIn}
+              onPressOut={handlePressOut}>
               <Text style={styles.vText}>
-                {listening ? "⏺ 聆听中..."
+                {listening ? "⏺ 聆听中...松开发送"
                   : voiceBlocked ? "已阻止（点我重试）"
-                  : "点按说话"}
+                  : "按住说话"}
               </Text>
             </Pressable>
             <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(true)}>
