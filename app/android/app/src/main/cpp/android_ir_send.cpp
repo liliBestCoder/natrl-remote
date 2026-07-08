@@ -74,7 +74,7 @@ static void captureAc(T& ac, std::vector<uint32_t>& timing) {
 }
 
 ir_timing_result AndroidIRsend::encodeAC(
-    const char* brand, int temp, const char* mode, const char* fan)
+    const char* brand, int temp, const char* mode, const char* fan, const char* subModel)
 {
     ir_timing_result r;
     r.carrier_freq = 38000;
@@ -95,7 +95,12 @@ ir_timing_result AndroidIRsend::encodeAC(
     switch (proto) {
     case WHIRLPOOL_AC: {
         IRWhirlpoolAc ac(0, false, true);
-        ac.begin(); ac.setModel(whirlpool_ac_remote_model_t::DG11J191);
+        ac.begin();
+        // Pick sub-model: default DG11J13A (more common), DG11J191 if specified
+        if (subModel && strstr(subModel, "DG11J191"))
+          ac.setModel(whirlpool_ac_remote_model_t::DG11J191);
+        else
+          ac.setModel(whirlpool_ac_remote_model_t::DG11J13A);
         ac.setMode(ac.convertMode(m)); ac.setTemp(temp);
         ac.setFan(ac.convertFan(f)); ac.setPowerToggle(true); ac.send();
         captureAc(ac, r.timing); r.carrier_freq = 38400; break;

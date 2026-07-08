@@ -43,6 +43,24 @@ const probeSessions = new Map<string, ProbeSession>();
 
 import { matchBrandHint, getProbeOrder, getBrandDisplay } from "./brand-db";
 
+// ─── AC Sub-Model Mapping ──────────────────────────────────────────
+// ESP8266 library supports multiple remote models per brand.
+// If a brand has sub-models, probe iterates all of them.
+// If no sub-models defined, defaults to "default" and uses C++ hardcoded value.
+const AC_SUB_MODELS: Record<string, string[]> = {
+  whirlpool: ["DG11J13A", "DG11J191"],
+  gree:      ["YAW1F", "YBOFB", "YX1FSF"],
+  panasonic: ["kPanasonicLke", "kPanasonicNke", "kPanasonicDke", "kPanasonicJke", "kPanasonicCkp", "kPanasonicRkr"],
+  lg:        ["GE6711AR2853M", "AKB75215403", "AKB74955603", "AKB73757604", "LG6711A20083V"],
+  toshiba:   ["kToshibaGenericRemote_A", "kToshibaGenericRemote_B"],
+  fujitsu:   ["ARRAH2E", "ARDB1", "ARREB1E", "ARJW2", "ARRY4", "ARREW4E"],
+  haier:     ["V9014557_A", "V9014557_B"],
+  hitachi:   ["R_LT0541_HTA_A", "R_LT0541_HTA_B"],
+  tcl:       ["TAC09CHSD", "GZ055BE1"],
+  kelon:     ["DG11R201"],
+  // midea, daikin, mitsubishi, samsung, carrier, electra, coolix: single model, no sub-model enum
+};
+
 // ─── Tool Definitions (DeepSeek format) ──────────────────────────────
 
 export const TOOL_DEFINITIONS = [
@@ -438,26 +456,32 @@ async function execProbeBrand(
     console.log(`[probe] 无品牌提示，默认顺序探测 (deviceType=${effectiveDeviceType})`);
   }
 
-  // ── Build probe session (one step per brand) ──
+  // ── Build probe session (one step per brand, sub-models per brand) ──
   const session: ProbeSession = {
     deviceId,
     steps: orderedBrands.map((brandCode) => ({
       brandCode,
       attempted: false,
       userResponse: "pending",
-      irCommand: null as any, // no IR generated server-side anymore
+      irCommand: null as any,
+      subModels: effectiveDeviceType === "ac" ? (AC_SUB_MODELS[brandCode] || ["default"]) : [],
+      subModelIndex: 0,
+      matchedSubModel: null,
     })),
     matchedBrand: null,
+    matchedSubModel: null,
     complete: false,
   };
   probeSessions.set(deviceId, session);
 
-  // ── Pick FIRST brand, prepare probe commands ──
+  // ── Pick FIRST brand, first sub-model ──
   const firstBrandCode = orderedBrands[0];
   const firstStep = session.steps[0];
   firstStep.attempted = true;
 
   const isTV = effectiveDeviceType === "tv";
+  const currentSubModel = isTV ? "" : (firstStep.subModels[0] || "default");
+  firstStep.subModelIndex = 0;
 
   // Probe commands (params only, client encodes with .so)
   const probeCombos = isTV
@@ -470,7 +494,8 @@ async function execProbeBrand(
         { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
       ];
 
-  console.log(`[probe] ───── 第 1/${orderedBrands.length} 个品牌: ${firstBrandCode} (${isTV ? "TV" : "AC"}) ─────`);
+  const subModelDesc = isTV ? "" : ` [子型号: ${currentSubModel}]`;
+  console.log(`[probe] ───── 品牌: ${firstBrandCode}${subModelDesc} (第 1/${orderedBrands.length} 个) ─────`);
   console.log(`[probe] 准备 ${probeCombos.length} 条探测命令(客户端本地编码)`);
 
   // Build tool_call for client
@@ -483,6 +508,7 @@ async function execProbeBrand(
     name: "probe_brand",
     args: {
       brand_code: firstBrandCode,
+      sub_model: currentSubModel || undefined,
       probe_brand: brandDisplay,
       probe_step: 1,
       probe_total: orderedBrands.length,
@@ -494,7 +520,7 @@ async function execProbeBrand(
         label: c.label,
       })),
     },
-    message: `📡 正在探测品牌: **${brandDisplay}** (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
+    message: `📡 正在探测品牌: **${brandDisplay}**${subModelDesc} (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
   };
 
   ctx.toolCall = toolCall;
@@ -566,8 +592,13 @@ async function execRespondProbe(
   ctx.deviceId = deviceId;
 
   if (reacted && currentStep) {
-    // ── Brand matched! Create device in DB now ──
+    // ── Brand + sub-model matched! Create device in DB ──
+    const matchedSubModel = currentStep.subModels.length > 0
+      ? (currentStep.subModels[currentStep.subModelIndex] || "default")
+      : "";
+    currentStep.matchedSubModel = matchedSubModel;
     session.matchedBrand = currentStep.brandCode;
+    session.matchedSubModel = matchedSubModel;
     session.complete = true;
     probeSessions.delete(deviceId);
 
@@ -583,6 +614,7 @@ async function execRespondProbe(
       name: devName,
       deviceType: deviceTypeStr,
       brandCode: currentStep.brandCode,
+      subModel: matchedSubModel || undefined,
       protocol: "NEC",
       mqttTopic: `home/${room}/${deviceId}`,
       lastState: { power: false, temperature: 24, mode: "cool", fan_speed: "auto" },
@@ -591,9 +623,7 @@ async function execRespondProbe(
     };
     await setDevice(newDevice);
 
-    const attemptedCount = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
-    console.log(`[probe] ✅ 匹配成功! 品牌: ${currentStep.brandCode} (第 ${attemptedCount}/${session.steps.length} 个尝试) → 设备已创建并验证`);
-
+    console.log(`[probe] ✅ 匹配成功! 品牌: ${currentStep.brandCode} 子型号: ${matchedSubModel} → 设备已创建`);
     ctx.phase = "control";
     ctx.session.phase = "control";
     ctx.session.deviceType = deviceTypeStr;
@@ -602,50 +632,67 @@ async function execRespondProbe(
     ctx.setupStep = undefined;
 
     const brandName = await getBrandDisplay(currentStep.brandCode);
-    return JSON.stringify({
-      success: true,
-      matched_brand: currentStep.brandCode,
-      matched_brand_display: brandName,
-      attempts: attemptedCount,
-      total: session.steps.length,
-      status: "device_ready",
-      device_id: deviceId,
-      message: `🎉 探测成功！已识别为 **${brandName}**，设备「${devName}」已就绪。你可以直接说"打开${ctx.session.deviceType === 'tv' ? '电视' : '空调'}"来控制。`,
-      hint: "设备已自动创建并验证。注意：不要调用 register_device，设备已就绪可直接控制。",
+    return JSON.stringify({ success: true, matched_brand: currentStep.brandCode, matched_sub_model: matchedSubModel, brand_display: brandName, status: "device_ready", device_id: deviceId,
+      message: `🎉 探测成功！已识别为 **${brandName}** (${matchedSubModel})，设备「${devName}」已就绪。`,
     });
   }
 
-  // ── Not matched → try next brand ──
-  const nextUnattempted = session.steps.findIndex((s: import("./types").ProbeStep) => !s.attempted);
+  // ── Not matched → try next sub-model or next brand ──
+  if (currentStep) {
+    // Try next sub-model of same brand first
+    const nextSubIdx = currentStep.subModelIndex + 1;
+    if (currentStep.subModels.length > 0 && nextSubIdx < currentStep.subModels.length) {
+      currentStep.subModelIndex = nextSubIdx;
+      currentStep.userResponse = "pending";
+      const nextSubModel = currentStep.subModels[nextSubIdx];
+      const brandDisplay = await getBrandDisplay(currentStep.brandCode);
+      const isTV = ctx.session.deviceType === "tv";
+      const combos = isTV
+        ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
+        : [
+            { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+            { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
+            { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+            { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
+            { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
+          ];
+      console.log(`[probe] 🔄 同品牌换子型号: ${currentStep.brandCode}/${nextSubModel}`);
+      ctx.toolCall = {
+        name: "probe_brand",
+        args: {
+          brand_code: currentStep.brandCode,
+          sub_model: nextSubModel,
+          probe_brand: brandDisplay,
+          probe_step: currentStep.subModelIndex + 1,
+          probe_total: session.steps.length,
+          probe_commands: combos.map(c => ({ temperature: c.temperature, mode: c.mode, fan_speed: c.fan_speed, power: c.power, label: c.label })),
+        },
+        message: `🔄 ${brandDisplay} 换子型号 **${nextSubModel}** 继续探测...`,
+      };
+      return "";
+    }
+  }
 
+  // No more sub-models → try next brand
+  const nextUnattempted = session.steps.findIndex((s: import("./types").ProbeStep) => !s.attempted);
   if (nextUnattempted < 0) {
-    // All brands exhausted
     session.complete = true;
     probeSessions.delete(deviceId);
-
     ctx.session.probingActive = false;
     ctx.session.phase = "discovery";
     ctx.phase = "discovery";
-    ctx.setupStep = undefined;
-
-    console.log(`[probe] ❌ 所有 ${session.steps.length} 个品牌已探测完毕，均未匹配`);
-    return JSON.stringify({
-      success: false,
-      status: "exhausted",
-      total_attempted: session.steps.length,
-      message: `已尝试全部 ${session.steps.length} 个品牌，均未匹配。\n可能是红外发射问题（手机无红外硬件），或品牌不在库中。\n建议：检查手机是否支持红外，或用遥控器学习。`,
+    return JSON.stringify({ success: false, status: "exhausted", total_attempted: session.steps.length,
+      message: `已尝试全部品牌均未匹配。建议检查手机红外硬件。`,
     });
   }
 
-  // ── Advance to next brand, prepare probe params ──
   const nextStep = session.steps[nextUnattempted];
   nextStep.attempted = true;
   const brandCode = nextStep.brandCode;
-
   const isTV2 = ctx.session.deviceType === "tv";
-
-  // Probe commands (params only, client encodes with .so)
-  const probeCombos2 = isTV2
+  const nextSubModel = isTV2 ? "" : (nextStep.subModels[0] || "default");
+  nextStep.subModelIndex = 0;
+  const combos2 = isTV2
     ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
     : [
         { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
@@ -656,7 +703,6 @@ async function execRespondProbe(
       ];
 
   const attemptedCount2 = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
-  const progressPct = Math.round((attemptedCount2 / session.steps.length) * 100);
 
   console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} (${isTV2 ? "TV" : "AC"}) ─────`);
 
@@ -866,6 +912,7 @@ async function execControlAc(
     name: "control_ac",
     args: {
       brand_code: device.brandCode,
+      sub_model: device.subModel || undefined,
       temperature: target.temperature,
       mode: target.mode,
       fan_speed: target.fan_speed,

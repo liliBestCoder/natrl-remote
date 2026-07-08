@@ -35,7 +35,7 @@ class InfraredEncoderModule(reactContext: ReactApplicationContext) :
 
     /** Native method declarations — implemented in jni_bridge.c */
     private external fun nativeEncode(
-        brandCode: String, temperature: Int, mode: String, fanSpeed: String
+        brandCode: String, temperature: Int, mode: String, fanSpeed: String, subModel: String?
     ): java.util.HashMap<String, Any>?
 
     private external fun nativeGetCarrierFreq(brandCode: String): Int
@@ -54,9 +54,9 @@ class InfraredEncoderModule(reactContext: ReactApplicationContext) :
      * @return WritableMap with { carrierFreq: Int, pattern: IntArray }
      */
     @ReactMethod
-    fun encode(brandCode: String, temperature: Int, mode: String, fanSpeed: String, promise: Promise) {
+    fun encode(brandCode: String, temperature: Int, mode: String, fanSpeed: String, subModel: String?, promise: Promise) {
         try {
-            val result = nativeEncode(brandCode, temperature, mode, fanSpeed)
+            val result = nativeEncode(brandCode, temperature, mode, fanSpeed, subModel)
             if (result == null) {
                 promise.reject("ENCODE_ERROR", "Failed to encode IR frame")
                 return

@@ -88,7 +88,7 @@ interface InfraredEmitterNative {
 }
 
 interface InfraredEncoderNative {
-  encode(brandCode: string, temperature: number, mode: string, fanSpeed: string): Promise<{
+  encode(brandCode: string, temperature: number, mode: string, fanSpeed: string, subModel?: string): Promise<{
     carrierFreq: number;
     pattern: number[];
   }>;
@@ -138,9 +138,10 @@ export async function encodeAndEmit(
   temperature: number,
   mode: string,
   fanSpeed: string,
+  subModel?: string,
 ): Promise<{ success: boolean; method: string }> {
   console.log(
-    `[ir-emitter] Encode+Emit: brand=${brandCode} temp=${temperature} mode=${mode} fan=${fanSpeed}`
+    `[ir-emitter] Encode+Emit: brand=${brandCode}${subModel ? ` sub=${subModel}` : ""} temp=${temperature} mode=${mode} fan=${fanSpeed}`
   );
 
   // Step 1: Encode locally using .so library
@@ -149,7 +150,7 @@ export async function encodeAndEmit(
 
   if (InfraredEncoder) {
     try {
-      const encoded = await InfraredEncoder.encode(brandCode, temperature, mode, fanSpeed);
+      const encoded = await InfraredEncoder.encode(brandCode, temperature, mode, fanSpeed, subModel);
       carrierFreq = encoded.carrierFreq;
       pattern = encoded.pattern;
       console.log(`[ir-emitter] ✅ Local encode: ${pattern.length} pulses @ ${carrierFreq}Hz`);
@@ -214,18 +215,19 @@ export async function encodeAndEmitProbeSequence(
   brandCode: string,
   commands: Array<{ temperature: number; mode: string; fanSpeed: string; power: boolean; label: string }>,
   delayMs: number = 2000,
+  subModel?: string,
   onProgress?: (index: number, total: number, label: string, success: boolean) => void
 ): Promise<Array<{ index: number; label: string; success: boolean; method: string }>> {
   const results: Array<{ index: number; label: string; success: boolean; method: string }> = [];
 
-  console.log(`[ir-emitter] 🔁 Probe sequence: ${commands.length} commands for ${brandCode}`);
+  console.log(`[ir-emitter] 🔁 Probe sequence: ${commands.length} commands for ${brandCode}${subModel ? ` sub=${subModel}` : ""}`);
 
   for (let i = 0; i < commands.length; i++) {
     const cmd = commands[i];
     const idx = i + 1;
     console.log(`[ir-emitter]   Probe ${idx}/${commands.length}: ${cmd.label}`);
 
-    const result = await encodeAndEmit(brandCode, cmd.temperature, cmd.mode, cmd.fanSpeed);
+    const result = await encodeAndEmit(brandCode, cmd.temperature, cmd.mode, cmd.fanSpeed, subModel);
     results.push({ index: idx, label: cmd.label, ...result });
     onProgress?.(idx, commands.length, cmd.label, result.success);
 

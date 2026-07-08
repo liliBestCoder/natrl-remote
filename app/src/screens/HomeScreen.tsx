@@ -313,6 +313,7 @@ export default function HomeScreen() {
                 label: c.label,
               })),
               2000,
+              (tc.args as any).sub_model,
               (idx, total, label, success) => {
                 const icon = success ? "📡" : "❌";
                 emitResults.push(`${icon} ${idx}/${total}: ${label}`);
@@ -341,6 +342,7 @@ export default function HomeScreen() {
             tc.args.temperature || 26,
             tc.args.mode || "cool",
             tc.args.fan_speed || "auto",
+            (tc.args as any).sub_model,
           );
           if (irResult.success) {
             setIrStatus(`📡 红外已发射 (${tc.args.brand_code} ${tc.args.temperature}°C ${tc.args.mode})`);

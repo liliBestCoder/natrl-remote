@@ -84,6 +84,7 @@ export interface ToolCallArgs {
   probe_brand?: string;
   probe_step?: number;
   probe_total?: number;
+  sub_model?: string;    // AC sub-model for encoding
 }
 
 export interface ToolCall {
@@ -108,6 +109,7 @@ export interface Device {
   name: string;
   deviceType: DeviceType;
   brandCode: string | null;
+  subModel: string | null;
   protocol: string | null;
   mqttTopic: string;
   lastState: DeviceState;
@@ -146,12 +148,16 @@ export interface ProbeStep {
   brandCode: string;
   attempted: boolean;
   userResponse: "yes" | "no" | "pending";
-  irCommand: IRCommand | null;  // nullable — no longer generated server-side
+  irCommand: IRCommand | null;
+  subModels: string[];           // sub-models to probe for this brand
+  subModelIndex: number;         // current sub-model (0-based)
+  matchedSubModel: string | null; // saved when user says "有反应"
 }
 
 export interface ProbeSession {
   deviceId: string;
   steps: ProbeStep[];
   matchedBrand: string | null;
+  matchedSubModel: string | null;
   complete: boolean;
 }

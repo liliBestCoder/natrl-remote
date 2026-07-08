@@ -13,7 +13,7 @@ public:
     ~AndroidIRsend();
 
     // AC encoding
-    ir_timing_result encodeAC(const char* brand, int temp, const char* mode, const char* fan);
+    ir_timing_result encodeAC(const char* brand, int temp, const char* mode, const char* fan, const char* subModel = nullptr);
 
     // TV encoding
     ir_timing_result encodeTV(const char* brand, const char* command);

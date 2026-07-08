@@ -6,19 +6,21 @@ extern "C" {
 
 JNIEXPORT jobject JNICALL
 Java_com_anonymous_natrlremote_ir_InfraredEncoderModule_nativeEncode(
-    JNIEnv* env, jobject, jstring brand, jint temp, jstring mode, jstring fan)
+    JNIEnv* env, jobject, jstring brand, jint temp, jstring mode, jstring fan, jstring subModel)
 {
     const char* bc = env->GetStringUTFChars(brand, nullptr);
     const char* m  = env->GetStringUTFChars(mode, nullptr);
     const char* fs = env->GetStringUTFChars(fan, nullptr);
+    const char* sm = subModel ? env->GetStringUTFChars(subModel, nullptr) : nullptr;
 
     AndroidIRsend sender;
-    ir_timing_result r = sender.encodeAC(bc, temp, m, fs);
+    ir_timing_result r = sender.encodeAC(bc, temp, m, fs, sm);
     uint32_t freq = sender.getCarrierFreq(bc);
 
     env->ReleaseStringUTFChars(brand, bc);
     env->ReleaseStringUTFChars(mode, m);
     env->ReleaseStringUTFChars(fan, fs);
+    if (sm) env->ReleaseStringUTFChars(subModel, sm);
 
     // Build HashMap result
     jclass mapClass = env->FindClass("java/util/HashMap");

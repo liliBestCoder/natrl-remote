@@ -53,15 +53,17 @@ export async function setDevice(device: Device): Promise<void> {
     const pool = await getMysql();
     if (pool) {
       await pool.execute(
-        `INSERT INTO devices (id, user_id, room, name, device_type, brand_code, protocol, mqtt_topic, last_state, verified, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO devices (id, user_id, room, name, device_type, brand_code, sub_model, protocol, mqtt_topic, last_state, verified, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            room = VALUES(room), name = VALUES(name), brand_code = VALUES(brand_code),
+           sub_model = VALUES(sub_model),
            protocol = VALUES(protocol), last_state = VALUES(last_state),
            verified = VALUES(verified)`,
         [
           device.id, device.userId, device.room, device.name,
-          device.deviceType, device.brandCode || null, device.protocol || null,
+          device.deviceType, device.brandCode || null, device.subModel || null,
+          device.protocol || null,
           device.mqttTopic, JSON.stringify(device.lastState),
           device.verified ? 1 : 0, device.createdAt,
         ]
@@ -101,7 +103,7 @@ export async function getDevice(deviceId: string): Promise<Device | null> {
     const pool = await getMysql();
     if (pool) {
       const [rows] = await pool.execute(
-        `SELECT id, user_id, room, name, device_type, brand_code, protocol, mqtt_topic, last_state, verified, created_at
+        `SELECT id, user_id, room, name, device_type, brand_code, sub_model, protocol, mqtt_topic, last_state, verified, created_at
          FROM devices WHERE id = ?`, [deviceId]
       ) as any;
       if (rows.length > 0) {
@@ -113,6 +115,7 @@ export async function getDevice(deviceId: string): Promise<Device | null> {
           name: r.name,
           deviceType: r.device_type,
           brandCode: r.brand_code || undefined,
+          subModel: r.sub_model || undefined,
           protocol: r.protocol || undefined,
           mqttTopic: r.mqtt_topic,
           lastState: typeof r.last_state === "string" ? JSON.parse(r.last_state) : r.last_state,
@@ -161,7 +164,7 @@ export async function getUserDevices(userId: string): Promise<Device[]> {
     const pool = await getMysql();
     if (pool) {
       const [rows] = await pool.execute(
-        `SELECT id, user_id, room, name, device_type, brand_code, protocol, mqtt_topic, last_state, verified, created_at
+        `SELECT id, user_id, room, name, device_type, brand_code, sub_model, protocol, mqtt_topic, last_state, verified, created_at
          FROM devices WHERE user_id = ? ORDER BY created_at DESC`, [userId]
       ) as any;
       if (rows.length > 0) {
@@ -172,6 +175,7 @@ export async function getUserDevices(userId: string): Promise<Device[]> {
           name: r.name,
           deviceType: r.device_type,
           brandCode: r.brand_code || undefined,
+          subModel: r.sub_model || undefined,
           protocol: r.protocol || undefined,
           mqttTopic: r.mqtt_topic,
           lastState: typeof r.last_state === "string" ? JSON.parse(r.last_state) : r.last_state,
