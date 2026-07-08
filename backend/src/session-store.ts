@@ -117,8 +117,8 @@ export function buildStateContext(session: SessionState): string {
 
     case "control": {
       lines.push("[当前阶段: 阶段3 — 日常使用]");
-      lines.push("⛔⛔⛔ 你的唯一任务：收到用户指令 → 调用 control_tv 或 control_ac → 停止 ⛔⛔⛔");
-      lines.push("⛔ 文字回复而不调用函数 = 红外不会发射 = 系统失效");
+      lines.push("⛔ 别整虚的！收到指令必须真的调用函数，不是文字回复！");
+      lines.push("⛔ 不调函数 = 红外不发射 = 用户在骂你！");
       if (session.deviceType === "tv") {
         lines.push("用户有电视。调用 control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\")");
       } else {
