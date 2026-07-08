@@ -30,7 +30,7 @@ class VoiceRecognitionModule(reactContext: ReactApplicationContext) :
         private const val BAIDU_SECRET_KEY = "2JiLRJMzmn9u5DAqlw9OmgioXkXJLIBw"
         private const val TOKEN_URL  = "https://aip.baidubce.com/oauth/2.0/token"
         private const val ASR_URL    = "https://vop.baidu.com/server_api"
-        private const val DEV_PID    = 80001  // 极速版 普通话, 精度更高
+        private const val DEV_PID    = 1536  // 普通话(搜索模型), 短指令识别更准
     }
 
     // ── State ──
