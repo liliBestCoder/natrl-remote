@@ -54,8 +54,6 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能家电语音助手。你通过
 ⛔ **用户要的是红外发射，不是你的废话！不调函数红外灯不会亮！**
 
 **电视命令 → 必须调用 control_tv:**
-
-**电视命令 → 必须调用 control_tv:**
 - "打开/关/开机/关机" → control_tv(command:"power")
 - "音量+/音量加/音量大/调高" → control_tv(command:"vol_up")
 - "音量-/音量减/音量小/调低" → control_tv(command:"vol_down")
@@ -69,6 +67,7 @@ const SYSTEM_PROMPT = `你是 Natrl，一个智能家电语音助手。你通过
 - "主页/首页" → control_tv(command:"home")
 - "上/下/左/右/确认/OK" → control_tv(command:"up"/"down"/"left"/"right"/"ok")
 - "信息" → control_tv(command:"info")
+- "0/1/2/3/4/5/6/7/8/9台/频道" → control_tv(command:"0"/"1"…"9")
 
 **空调命令 → 必须调用 control_ac:**
 - "打开/关掉" → control_ac(power:true/false)
@@ -269,7 +268,7 @@ function hasCommandIntent(text: string): boolean {
     /开|关|打开|关闭|关机|开机/,
     /音量|声音|大声|小声|调大|调小|调高|调低/,
     /静音|消音/,
-    /换台|频道|上一个|下一个/,
+    /换台|频道|上一个|下一个|\d+台/,
     /信号源|HDMI|输入/,
     /菜单|设置|返回|退出|主页|首页/,
     /确认|OK|确定/,

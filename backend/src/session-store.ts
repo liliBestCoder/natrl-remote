@@ -120,7 +120,25 @@ export function buildStateContext(session: SessionState): string {
       lines.push("⛔ 别整虚的！收到指令必须真的调用函数，不是文字回复！");
       lines.push("⛔ 不调函数 = 红外不发射 = 用户在骂你！");
       if (session.deviceType === "tv") {
-        lines.push("用户有电视。调用 control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\")");
+        const brand = session.matchedBrand || "";
+        const allCmds = "control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\"/\"0\"-\"9\")";
+        // Brand-specific info
+        if (brand === "changhong") {
+          lines.push(`用户有长虹电视(NEC 0x40)。已验证: power/vol±/ch±/input/0-9/ok/menu/exit/info。无方向键/back/home。调用 ${allCmds}`);
+        } else if (["hisense","haier","lg","sharp"].includes(brand)) {
+          lines.push(`用户有${brand}电视(NEC 0x04)。全功能可用。调用 ${allCmds}`);
+        } else if (["sony","philips"].includes(brand)) {
+          lines.push(`用户有${brand}电视。全功能可用。调用 ${allCmds}`);
+        } else if (brand === "samsung") {
+          lines.push("用户有三星电视。⚠️ 三星协议暂不支持，用NEC回退。无ch±/home。调用 control_tv(command:\"power\"/\"vol_up\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"info\"/\"0\"-\"9\")");
+        } else if (brand === "tcl") {
+          lines.push("用户有TCL电视。⚠️ RCA协议暂不支持，用NEC回退。调用 control_tv(command:\"power\"/\"vol_up\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\"/\"0\"-\"9\")");
+        } else if (brand === "xiaomi") {
+          lines.push("用户有小米电视(NEC 0x86)。已验证: power/vol±/ch±/mute/input/0-9/ok/back/info。无方向键/menu/exit/home。调用 control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"ok\"/\"back\"/\"info\"/\"0\"-\"9\")");
+        } else {
+          // skyworth, konka — NOT in IRDB
+          lines.push(`用户有${brand || "未知品牌"}电视。⚠️ 红外码未经IRDB验证，不在任何红外数据库里。调用 ${allCmds}`);
+        }
       } else {
         lines.push("用户有空调。调用 control_ac(power:/temperature:/mode:/fan_speed:)");
       }
