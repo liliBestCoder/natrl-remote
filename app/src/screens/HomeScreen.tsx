@@ -46,9 +46,10 @@ export default function HomeScreen() {
   // Voice mode (default) vs text mode
   const [textMode, setTextMode] = useState(false);
   const [listening, setListening] = useState(false);
-  const [voiceAvailable, setVoiceAvailable] = useState(true);  // optimistic: assume yes until proven otherwise
+  const [voiceAvailable, setVoiceAvailable] = useState(true);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
-  const handleSendRef = useRef<any>(null);  // always points to latest handleSend
+  const [diag, setDiag] = useState<string | null>(null);  // diagnostic panel with copyable text
+  const handleSendRef = useRef<any>(null);
   const recognitionRef = useRef<any>(null); // web only
 
   // Debug panel: raw NEC transmitter
@@ -108,51 +109,39 @@ export default function HomeScreen() {
     } else {
       const { NativeModules } = require("react-native");
       const VR = NativeModules.VoiceRecognition;
-      console.log("[voice] NativeModules.VoiceRecognition:", VR ? "loaded" : "NOT FOUND");
-      voiceModuleRef.current = VR; // cache regardless
+      voiceModuleRef.current = VR;
 
-      if (VR) {
-        console.log("[voice] module keys:", Object.keys(VR));
-        // Don't pre-block — just check for diagnostics, but try on button press
-        if (VR.isAvailable) {
-          VR.isAvailable().then((ok: boolean) => {
-            setVoiceAvailable(ok);
-            console.log("[voice] isAvailable() resolved:", ok);
-          }).catch((e: any) => {
-            console.log("[voice] isAvailable() rejected:", e?.message, e?.code);
-          });
-        } else {
-          console.log("[voice] VR.isAvailable missing, keys:", Object.keys(VR));
-        }
-        const emitter = new NativeEventEmitter(VR);
-        const onResult = (e: any) => {
-          console.log("[voice] native event voiceResult:", JSON.stringify(e));
-          if (e?.transcript) {
-            lastTranscriptRef.current = e.transcript;
-            if (e.isFinal) {
-              setListening(false);
-              handleSendRef.current(e.transcript);
-            }
-          }
-        };
-        const onStart = () => {
-          console.log("[voice] native event voiceStart");
-          setListening(true);
-        };
-        const onEnd = () => {
-          console.log("[voice] native event voiceEnd");
-        };
-        const onError = (e: any) => {
-          console.log("[voice] native event voiceError:", JSON.stringify(e));
-          setListening(false);
-          if (e?.error?.includes("权限") || e?.error?.includes("permission")) setVoiceBlocked(true);
-        };
-        const subResult = emitter.addListener("voiceResult", onResult);
-        const subStart = emitter.addListener("voiceStart", onStart);
-        const subEnd = emitter.addListener("voiceEnd", onEnd);
-        const subError = emitter.addListener("voiceError", onError);
-        return () => { subResult.remove(); subStart.remove(); subEnd.remove(); subError.remove(); };
+      if (!VR) {
+        setDiag("❌ VoiceRecognition 原生模块未找到\n→ APK 可能缺少原生代码，请确认已安装最新版本");
+        return;
       }
+
+      const keys = Object.keys(VR).join(", ");
+      VR.isAvailable?.()
+        .then((ok: boolean) => {
+          setVoiceAvailable(ok);
+          setDiag(`✅ 语音模块已加载\n方法: ${keys}\nisAvailable: ${ok}${ok ? '' : '\n⚠️ 系统无语音引擎，请启用小爱同学/智慧语音等'}`);
+        })
+        .catch((e: any) => {
+          setDiag(`⚠️ 语音模块已加载\n方法: ${keys}\nisAvailable 调用失败: ${e?.message || e}`);
+        });
+
+      const emitter = new NativeEventEmitter(VR);
+      emitter.addListener("voiceStart", () => setListening(true));
+      emitter.addListener("voiceResult", (e: any) => {
+        if (e?.transcript) {
+          lastTranscriptRef.current = e.transcript;
+          if (e.isFinal) {
+            setListening(false);
+            handleSendRef.current(e.transcript);
+          }
+        }
+      });
+      emitter.addListener("voiceError", (e: any) => {
+        setListening(false);
+        setDiag(`❌ 语音识别错误\n${e?.error || JSON.stringify(e)}`);
+        if ((e?.error || '').includes("权限")) setVoiceBlocked(true);
+      });
     }
   }, []);
 
@@ -200,7 +189,7 @@ export default function HomeScreen() {
   const startVoice = useCallback(async () => {
     if (Platform.OS === "web") {
       if (!voiceAvailable) {
-        addAssistantMsg("当前浏览器不支持语音识别。");
+        setDiag("❌ 浏览器不支持 SpeechRecognition API");
         return;
       }
       try {
@@ -209,7 +198,7 @@ export default function HomeScreen() {
       } catch (permErr: any) {
         if (permErr.name === "NotAllowedError") {
           setVoiceBlocked(true);
-          addAssistantMsg("麦克风已被阻止。点地址栏🔒→允许→刷新。");
+          setDiag("❌ 麦克风权限被拒绝\n→ 点浏览器地址栏左侧🔒→允许麦克风→刷新页面");
         }
         return;
       }
@@ -221,7 +210,7 @@ export default function HomeScreen() {
         rec.interimResults = false;
         rec.continuous = false;
         rec.onresult = (e: any) => {
-          handleSend(e.results[0][0].transcript);
+          handleSendRef.current(e.results[0][0].transcript);
         };
         rec.onerror = (e: any) => {
           if (e.error === "not-allowed") setVoiceBlocked(true);
@@ -230,39 +219,32 @@ export default function HomeScreen() {
         rec.start();
       } catch (_e: any) {}
     } else {
-      // ── Android: just try to start. No pre-check. Let it fail with a real error. ──
-      console.log("[voice] startVoice called");
       try {
         const granted = await PermissionsAndroid.request(
           "android.permission.RECORD_AUDIO",
           { title: "麦克风权限", message: "语音控制需要麦克风权限",
             buttonPositive: "允许", buttonNegative: "拒绝" }
         );
-        console.log("[voice] RECORD_AUDIO permission:", granted);
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
           setVoiceBlocked(true);
-          addAssistantMsg("麦克风权限未授权。");
+          setDiag("❌ RECORD_AUDIO 权限被拒绝\n→ 系统设置→应用→Natrl→权限→允许麦克风");
           return;
         }
-        // Use cached module ref from useEffect
         const VR = voiceModuleRef.current;
-        console.log("[voice] voiceModuleRef.current:", VR ? "found" : "NULL");
         if (!VR) {
-          addAssistantMsg("语音模块未加载（APK可能缺少原生模块）。");
+          setDiag("❌ VoiceRecognition 模块引用为空\n→ APK 可能缺少原生代码，请更新APP");
           return;
         }
         if (!VR.startListening) {
-          addAssistantMsg("语音模块方法缺失: startListening 不存在");
+          setDiag("❌ VoiceRecognition.startListening 方法不存在\n→ 原生模块注册异常，请更新APP");
           return;
         }
         await VR.startListening("zh-CN");
-        console.log("[voice] startListening() returned OK");
       } catch (e: any) {
-        console.log("[voice] catch in startVoice:", e?.message, e?.code, e);
         if (e?.code === "NO_ENGINE") {
-          addAssistantMsg("系统语音引擎不可用。请确认手机已启用语音助手（如小爱同学/智慧语音等）。");
-        } else if (e?.message) {
-          addAssistantMsg("语音启动失败: " + e.message);
+          setDiag("❌ 系统语音引擎不可用 (NO_ENGINE)\n→ 请在手机设置中启用语音助手（小爱同学/智慧语音等）");
+        } else {
+          setDiag(`❌ startListening 异常\ncode: ${e?.code || 'none'}\nmessage: ${e?.message || String(e)}`);
         }
       }
     }
@@ -324,10 +306,9 @@ export default function HomeScreen() {
               setIrStatus(`📺 已发送: ${brandCode} 开关命令\n观察电视是否有反应...`);
             } else {
               const errMsg = irResult.method === "no_encoder"
-                ? `❌ 红外编码模块未加载 (libnatrl_ir.so)，请检查 APK 是否包含 .so 文件`
-                : `❌ TV发射失败 (${brandCode}) — ${irResult.method}`;
-              setIrStatus(errMsg);
-              addAssistantMsg(errMsg);
+                ? `❌ 红外编码模块未加载\n→ libnatrl_ir.so 未找到，请确认APK包含原生库`
+                : `❌ TV发射失败\n→ brand: ${brandCode}, reason: ${irResult.method}`;
+              setDiag(errMsg);
             }
             setTimeout(() => setIrStatus(null), 10000);
           } else {
@@ -352,15 +333,13 @@ export default function HomeScreen() {
               const total = probeCmds.length;
               const allNoEncoder = seqResults.every((r) => r.method === "no_encoder");
               if (allNoEncoder) {
-                const msg = `❌ 红外编码模块未加载 (libnatrl_ir.so)\n请确认 APK 包含 .so 文件或手机架构匹配`;
-                setIrStatus(msg);
-                addAssistantMsg(msg);
+                setDiag(`❌ 红外编码模块未加载 (libnatrl_ir.so)\n→ 请确认APK包含原生库或手机架构匹配`);
               } else if (successCount === total) {
                 setIrStatus(`✅ ${total}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
               } else if (successCount > 0) {
                 setIrStatus(`⚠️ ${successCount}/${total} 条已发射 (${brandCode})\n观察空调是否有反应...`);
               } else {
-                setIrStatus(`❌ 无红外硬件，无法发射 (${brandCode})\n请确认手机支持红外`);
+                setDiag(`❌ 无红外硬件\n→ 手机不支持红外发射 (${brandCode})`);
               }
               setTimeout(() => setIrStatus(null), 10000);
             });
@@ -376,11 +355,9 @@ export default function HomeScreen() {
           if (irResult.success) {
             setIrStatus(`📡 红外已发射 (${tc.args.brand_code} ${tc.args.temperature}°C ${tc.args.mode})`);
           } else {
-            const errMsg = irResult.method === "no_encoder"
-              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)，无法发射`
-              : `⚠️ 发射失败 (${tc.args.brand_code}) — ${irResult.method}`;
-            setIrStatus(errMsg);
-            addAssistantMsg(errMsg);
+            setDiag(irResult.method === "no_encoder"
+              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)\n→ 无法发射AC指令`
+              : `❌ AC发射失败\n→ brand: ${tc.args.brand_code}, reason: ${irResult.method}`);
           }
           setTimeout(() => setIrStatus(null), 6000);
 
@@ -392,11 +369,9 @@ export default function HomeScreen() {
           if (irResult.success) {
             setIrStatus(`📺 红外已发射 (${tc.args.brand_code} ${tc.args.command})`);
           } else {
-            const errMsg = irResult.method === "no_encoder"
-              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)，无法发射`
-              : `⚠️ TV发射失败 (${tc.args.brand_code}) — ${irResult.method}`;
-            setIrStatus(errMsg);
-            addAssistantMsg(errMsg);
+            setDiag(irResult.method === "no_encoder"
+              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)\n→ 无法发射TV指令`
+              : `❌ TV发射失败\n→ brand: ${tc.args.brand_code}, reason: ${irResult.method}`);
           }
           setTimeout(() => setIrStatus(null), 6000);
         }
@@ -405,12 +380,9 @@ export default function HomeScreen() {
       await loadDevices();
     } catch (e: any) {
       if (e.message?.includes("fetch") || e.message?.includes("Network")) {
-        addAssistantMsg("后端服务未启动，请先启动后端。连接地址: " + (
-          Platform.OS === "web" && typeof window !== "undefined"
-            ? `http://${window.location.hostname}:3000` : "http://192.168.21.9:3000"
-        ));
+        setDiag(`❌ 网络请求失败\n→ ${e.message}\n→ 请确认后端已启动`);
       } else {
-        addAssistantMsg(e.message);
+        setDiag(`❌ 请求异常\n→ ${e.message || String(e)}`);
       }
     }
     setLoading(false);
@@ -491,6 +463,17 @@ export default function HomeScreen() {
           {loading && <ActivityIndicator style={{ marginTop: 8 }} color="#58a6ff" />}
         </ScrollView>
         {irStatus && <View style={styles.irMsg}><Text style={styles.irMsgT}>{irStatus}</Text></View>}
+        {diag && (
+          <View style={styles.diagPanel}>
+            <View style={styles.diagHeader}>
+              <Text style={styles.diagTitle}>🔧 诊断</Text>
+              <TouchableOpacity onPress={() => setDiag(null)}>
+                <Text style={styles.diagClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput style={styles.diagText} value={diag} multiline editable={false} selectTextOnFocus />
+          </View>
+        )}
         {renderBar()}
         <View style={{ height: insets.bottom + 8 }} />
       </View>
@@ -552,6 +535,25 @@ export default function HomeScreen() {
         {loading && <ActivityIndicator style={{ marginTop: 8 }} color="#58a6ff" />}
       </ScrollView>
       {irStatus && <View style={styles.irMsg}><Text style={styles.irMsgT}>{irStatus}</Text></View>}
+
+      {/* ── Diagnostic Panel (copyable) ── */}
+      {diag && (
+        <View style={styles.diagPanel}>
+          <View style={styles.diagHeader}>
+            <Text style={styles.diagTitle}>🔧 诊断</Text>
+            <TouchableOpacity onPress={() => setDiag(null)}>
+              <Text style={styles.diagClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <TextInput
+            style={styles.diagText}
+            value={diag}
+            multiline
+            editable={false}
+            selectTextOnFocus
+          />
+        </View>
+      )}
 
       {/* ── Debug Panel: Raw NEC Transmitter ── */}
       <TouchableOpacity style={styles.debugToggle} onPress={() => setShowDebug(!showDebug)}>
@@ -761,6 +763,21 @@ const styles = StyleSheet.create({
   // Misc
   linkBtn: { marginTop: 16, alignItems: "center", paddingVertical: 8 },
   linkBtnText: { color: "#58a6ff", fontSize: 14 },
+
+  // Voice diagnostic panel (copyable)
+  diagPanel: {
+    backgroundColor: "#1a1a2e", borderRadius: 12, padding: 10,
+    borderColor: "#ffa726", borderWidth: 1, marginTop: 8,
+  },
+  diagHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  diagTitle: { color: "#ffa726", fontSize: 13, fontWeight: "700" },
+  diagClose: { color: "#ffa726", fontSize: 18, paddingHorizontal: 4 },
+  diagText: {
+    color: "#e6edf3", fontSize: 12, lineHeight: 18,
+    backgroundColor: "#0d1117", borderRadius: 8, padding: 8,
+    borderColor: "#30363d", borderWidth: 1, textAlignVertical: "top",
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
 
   // Debug panel
   debugToggle: { alignSelf: "flex-end", paddingVertical: 4, paddingHorizontal: 8, marginTop: 4 },
