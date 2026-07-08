@@ -330,15 +330,15 @@ static const TVBrand TV_BRANDS[] = {
         {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x00}, // num: 🚫 fake placeholder
         0x04},  // only core possibly real
 
-    // ── Changhong (长虹) — ✅ IRDB Codeset1 + Codeset2, user-tested ──
-    // Source: Flipper-IRDB _Converted_/IR_Plus/C/CHANGHONG/Codeset1.ir + Codeset2.ir
-    // Two codesets exist. User TV: Codeset1 base, vol from Codeset2 (Codeset1 vol beeps but no effect).
-    // Keys NOT in either codeset (marked 🚫): up/down/left/right/back/home/mute
+    // ── Changhong (长虹) — ✅ IRDB Codeset1+2, user-tested ──
+    // Source: Flipper-IRDB CHANGHONG + user debug panel testing
+    // Confirmed by user: power=0x12, left=0x46, right=0x47, mute=0x10
+    // Missing: up(🚫), down(🚫), back(🚫), home(🚫) — try 0x13, 0x42 on debug panel
     {"changhong",   NEC,  0x40,
-        0x12, 0x1A, 0x1E, 0x19, 0x1D, 0x13, 0x14,  // ✅ power,vol+✅C2,vol-✅C2,ch+✅C1,ch-✅C1,mute🚫guess,input✅
-        0x00,0x00,0x00,0x00,0x0A, 0x5B,0x00,0x44,0x00,0x16,  // up🚫 down🚫 left🚫 right🚫 ok✅=0x0A menu✅=0x5B back🚫 exit✅=0x44 home🚫 info✅=0x16
-        {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09}, // ✅ IRDB verified, both codesets
-        0x37},  // core+num+partial nav verified (ok/menu/exit/info real, rest unknown)
+        0x12, 0x1A, 0x1E, 0x19, 0x1D, 0x10, 0x14,  // ✅ power,vol+(C2),vol-(C2),ch+(C1),ch-(C1),mute✅user, input✅
+        0x00,0x00,0x46,0x47,0x0A, 0x5B,0x00,0x44,0x00,0x16,  // up🚫 down🚫 left✅user right✅user ok✅=0x0A menu✅=0x5B back🚫 exit✅=0x44 home🚫 info✅=0x16
+        {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09}, // ✅ IRDB verified
+        0x3F},  // missing only up/down/back/home
 
     // ── Konka (康佳) — ⚠️ NOT in IRDB ──
     {"konka",       NEC,  0x00,

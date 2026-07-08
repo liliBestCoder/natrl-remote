@@ -124,7 +124,7 @@ export function buildStateContext(session: SessionState): string {
         const allCmds = "control_tv(command:\"power\"/\"vol_up\"/\"vol_down\"/\"ch_up\"/\"ch_down\"/\"mute\"/\"input\"/\"up\"/\"down\"/\"left\"/\"right\"/\"ok\"/\"menu\"/\"back\"/\"exit\"/\"home\"/\"info\"/\"0\"-\"9\")";
         // Brand-specific info
         if (brand === "changhong") {
-          lines.push(`用户有长虹电视(NEC 0x40)。已验证: power/vol±/ch±/input/0-9/ok/menu/exit/info。无方向键/back/home。调用 ${allCmds}`);
+          lines.push(`用户有长虹电视(NEC 0x40)。已验证: power/vol±/ch±/mute/input/0-9/ok/left/right/menu/exit/info。缺少: up/down/back/home。调用 ${allCmds}`);
         } else if (["hisense","haier","lg","sharp"].includes(brand)) {
           lines.push(`用户有${brand}电视(NEC 0x04)。全功能可用。调用 ${allCmds}`);
         } else if (["sony","philips"].includes(brand)) {
