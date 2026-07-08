@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Platform, Pressable, ScrollView,
-  KeyboardAvoidingView,
+  KeyboardAvoidingView, PermissionsAndroid,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
@@ -222,10 +222,28 @@ export default function HomeScreen() {
     } else {
       // ── Native: expo-speech-recognition ──
       try {
+        // Explicit RECORD_AUDIO permission (Android 6+)
+        if (Platform.OS === "android") {
+          const granted = await PermissionsAndroid.request(
+            "android.permission.RECORD_AUDIO",
+            {
+              title: "麦克风权限",
+              message: "Natrl 需要麦克风权限来进行语音控制",
+              buttonPositive: "允许",
+              buttonNegative: "拒绝",
+            }
+          );
+          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            setVoiceBlocked(true);
+            addAssistantMsg("麦克风权限未授权，请在系统设置中允许。");
+            return;
+          }
+        }
+        // Also call the module's own permission check
         const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
         if (!perm.granted) {
           setVoiceBlocked(true);
-          addAssistantMsg("麦克风权限未授权，请在系统设置中允许。");
+          addAssistantMsg("语音识别权限未授权。");
           return;
         }
         ExpoSpeechRecognitionModule.start({
@@ -233,8 +251,10 @@ export default function HomeScreen() {
           interimResults: true,
           continuous: false,
         });
+        console.log("[voice] recognition started");
       } catch (e: any) {
-        console.log("[voice] native start error:", e);
+        console.log("[voice] start error:", e?.message || e);
+        addAssistantMsg("语音启动失败: " + (e?.message || "未知错误"));
       }
     }
   }, [voiceSupported, addAssistantMsg]);
