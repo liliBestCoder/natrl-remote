@@ -46,8 +46,9 @@ export default function HomeScreen() {
   // Voice mode (default) vs text mode
   const [textMode, setTextMode] = useState(false);
   const [listening, setListening] = useState(false);
-  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [voiceAvailable, setVoiceAvailable] = useState(true);  // optimistic: assume yes until proven otherwise
   const [voiceBlocked, setVoiceBlocked] = useState(false);
+  const handleSendRef = useRef<any>(null);  // always points to latest handleSend
   const recognitionRef = useRef<any>(null); // web only
 
   // Debug panel: raw NEC transmitter
@@ -97,43 +98,60 @@ export default function HomeScreen() {
   };
 
   const lastTranscriptRef = useRef("");
+  const voiceModuleRef = useRef<any>(null); // cached ref to VoiceRecognition native module
 
   // ── Voice Recognition setup (in-app SpeechRecognizer, no dialog, no IME) ──
   useEffect(() => {
     if (Platform.OS === "web") {
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      setVoiceSupported(!!SR);
+      setVoiceAvailable(!!SR);
     } else {
       const { NativeModules } = require("react-native");
       const VR = NativeModules.VoiceRecognition;
-      if (VR?.isAvailable) {
-        VR.isAvailable().then((ok: boolean) => {
-          setVoiceSupported(ok);
-          console.log("[voice] engine available:", ok);
-        });
+      console.log("[voice] NativeModules.VoiceRecognition:", VR ? "loaded" : "NOT FOUND");
+      voiceModuleRef.current = VR; // cache regardless
+
+      if (VR) {
+        console.log("[voice] module keys:", Object.keys(VR));
+        // Don't pre-block — just check for diagnostics, but try on button press
+        if (VR.isAvailable) {
+          VR.isAvailable().then((ok: boolean) => {
+            setVoiceAvailable(ok);
+            console.log("[voice] isAvailable() resolved:", ok);
+          }).catch((e: any) => {
+            console.log("[voice] isAvailable() rejected:", e?.message, e?.code);
+          });
+        } else {
+          console.log("[voice] VR.isAvailable missing, keys:", Object.keys(VR));
+        }
         const emitter = new NativeEventEmitter(VR);
         const onResult = (e: any) => {
+          console.log("[voice] native event voiceResult:", JSON.stringify(e));
           if (e?.transcript) {
             lastTranscriptRef.current = e.transcript;
-            console.log("[voice] result:", e.transcript, "final:", e.isFinal);
             if (e.isFinal) {
               setListening(false);
-              handleSend(e.transcript);
+              handleSendRef.current(e.transcript);
             }
           }
         };
-        const onStart = () => setListening(true);
+        const onStart = () => {
+          console.log("[voice] native event voiceStart");
+          setListening(true);
+        };
+        const onEnd = () => {
+          console.log("[voice] native event voiceEnd");
+        };
         const onError = (e: any) => {
-          console.log("[voice] error:", e?.error);
+          console.log("[voice] native event voiceError:", JSON.stringify(e));
           setListening(false);
-          if (e?.error?.includes("权限")) setVoiceBlocked(true);
+          if (e?.error?.includes("权限") || e?.error?.includes("permission")) setVoiceBlocked(true);
         };
         const subResult = emitter.addListener("voiceResult", onResult);
         const subStart = emitter.addListener("voiceStart", onStart);
+        const subEnd = emitter.addListener("voiceEnd", onEnd);
         const subError = emitter.addListener("voiceError", onError);
-        return () => { subResult.remove(); subStart.remove(); subError.remove(); };
-      } else {
-        setVoiceSupported(false);
+        return () => { subResult.remove(); subStart.remove(); subEnd.remove(); subError.remove(); };
       }
     }
   }, []);
@@ -179,16 +197,12 @@ export default function HomeScreen() {
   useEffect(() => { loadDevices(true); }, [loadDevices]);
 
   // === VOICE: Hold-to-talk ===
-  // listening state is 100% controlled by handlePressIn / handlePressOut.
-  // This function only starts the recognizer — never changes listening.
   const startVoice = useCallback(async () => {
-    if (!voiceSupported) {
-      addAssistantMsg("当前不支持语音识别。");
-      return;
-    }
-
     if (Platform.OS === "web") {
-      // ── Web Speech API ──
+      if (!voiceAvailable) {
+        addAssistantMsg("当前浏览器不支持语音识别。");
+        return;
+      }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach((t) => t.stop());
@@ -216,31 +230,43 @@ export default function HomeScreen() {
         rec.start();
       } catch (_e: any) {}
     } else {
-      // ── Native: in-app SpeechRecognizer (no system dialog, no IME) ──
+      // ── Android: just try to start. No pre-check. Let it fail with a real error. ──
+      console.log("[voice] startVoice called");
       try {
         const granted = await PermissionsAndroid.request(
           "android.permission.RECORD_AUDIO",
           { title: "麦克风权限", message: "语音控制需要麦克风权限",
             buttonPositive: "允许", buttonNegative: "拒绝" }
         );
+        console.log("[voice] RECORD_AUDIO permission:", granted);
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
           setVoiceBlocked(true);
           addAssistantMsg("麦克风权限未授权。");
           return;
         }
-        const { NativeModules } = require("react-native");
-        const VR = NativeModules.VoiceRecognition;
-        if (!VR) { addAssistantMsg("语音模块未加载"); return; }
+        // Use cached module ref from useEffect
+        const VR = voiceModuleRef.current;
+        console.log("[voice] voiceModuleRef.current:", VR ? "found" : "NULL");
+        if (!VR) {
+          addAssistantMsg("语音模块未加载（APK可能缺少原生模块）。");
+          return;
+        }
+        if (!VR.startListening) {
+          addAssistantMsg("语音模块方法缺失: startListening 不存在");
+          return;
+        }
         await VR.startListening("zh-CN");
+        console.log("[voice] startListening() returned OK");
       } catch (e: any) {
-        console.log("[voice] error:", e?.message);
+        console.log("[voice] catch in startVoice:", e?.message, e?.code, e);
         if (e?.code === "NO_ENGINE") {
-          setVoiceBlocked(true);
-          addAssistantMsg("设备不支持语音识别");
+          addAssistantMsg("系统语音引擎不可用。请确认手机已启用语音助手（如小爱同学/智慧语音等）。");
+        } else if (e?.message) {
+          addAssistantMsg("语音启动失败: " + e.message);
         }
       }
     }
-  }, [voiceSupported, addAssistantMsg]);
+  }, [voiceAvailable, addAssistantMsg]);
 
   const stopVoice = useCallback(() => {
     if (Platform.OS === "web") {
@@ -390,6 +416,9 @@ export default function HomeScreen() {
     setLoading(false);
   };
 
+  // Keep ref in sync so event listeners always use the latest handleSend
+  handleSendRef.current = handleSend;
+
   // Hold-to-talk handlers (after handleSend so closure captures it)
   const handlePressIn = useCallback(() => {
     if (textMode) return;
@@ -403,7 +432,7 @@ export default function HomeScreen() {
     setListening(false);
     const text = lastTranscriptRef.current.trim();
     if (text) handleSend(text);
-  }, [stopVoice, textMode]);
+  }, [stopVoice, handleSend]);
 
   const activeDevice = devices.find((d) => d.verified);
   const isTV = activeDevice?.deviceType === "tv";
@@ -596,7 +625,7 @@ export default function HomeScreen() {
               </Text>
             </View>
           )}
-          {!voiceSupported && (
+          {!voiceAvailable && (
             <View style={styles.voiceNotice}>
               <Text style={styles.voiceNoticeText}>
                 {Platform.OS === "web"
@@ -605,10 +634,10 @@ export default function HomeScreen() {
               </Text>
             </View>
           )}
-          {/* Voice bar: gray background, centered text + keyboard switch on right */}
-          <View style={styles.vBarRow}>
+          {/* Voice bar: same container style as text bar, mode switch inside */}
+          <View style={styles.tBar}>
             <Pressable
-              style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
+              style={[styles.vBtnInner, listening && styles.vBtnInnerActive, voiceBlocked && styles.vBtnInnerBlocked]}
               onPressIn={handlePressIn}
               onPressOut={handlePressOut}>
               <Text style={styles.vText}>
@@ -642,7 +671,7 @@ export default function HomeScreen() {
             autoFocus
           />
           <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(false)}>
-            <Text style={styles.modeSwitchIcon}>🎤</Text>
+            <Text style={styles.modeSwitchIcon}>🗣️</Text>
           </TouchableOpacity>
           {input.trim().length > 0 && (
             <TouchableOpacity style={styles.tSend} onPress={() => handleSend()} disabled={loading}>
@@ -706,14 +735,13 @@ const styles = StyleSheet.create({
   // Voice bar
   voiceNotice: { backgroundColor: "#332b00", borderRadius: 10, padding: 10, marginBottom: 6, borderColor: "#665500", borderWidth: 1 },
   voiceNoticeText: { color: "#ffa726", fontSize: 13, textAlign: "center", lineHeight: 18 },
-  vBtn: {
+  vBtnInner: {
     flex: 1,
     flexDirection: "row", alignItems: "center", justifyContent: "center",
-    backgroundColor: "#30363d", borderRadius: 28, paddingVertical: 16,
+    paddingVertical: 10,
   },
-  vBtnActive: { backgroundColor: "#f44336" },
-  vBtnBlocked: { backgroundColor: "#484f58", opacity: 0.8 },
-  vIcon: { fontSize: 22, marginRight: 8 },
+  vBtnInnerActive: { backgroundColor: "#f4433622" },
+  vBtnInnerBlocked: { opacity: 0.6 },
   vText: { color: "#e6edf3", fontSize: 17, fontWeight: "600" },
 
   // Text bar
@@ -727,7 +755,6 @@ const styles = StyleSheet.create({
   tSendT: { color: "#fff", fontSize: 20, fontWeight: "700" },
 
   // Mode switch — inside the bar, right side
-  vBarRow: { flexDirection: "row", alignItems: "center" },
   modeSwitch: { width: 40, height: 40, borderRadius: 20, justifyContent: "center", alignItems: "center", marginLeft: 8, backgroundColor: "#30363d" },
   modeSwitchIcon: { fontSize: 18 },
 
