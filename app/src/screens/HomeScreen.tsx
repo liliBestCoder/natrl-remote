@@ -8,8 +8,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
 import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC } from "../services/ir-emitter";
-import { ExpoSpeechRecognitionModule } from "expo-speech-recognition";
-import type { ExpoSpeechRecognitionResultEvent, ExpoSpeechRecognitionErrorEvent } from "expo-speech-recognition";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -50,9 +48,7 @@ export default function HomeScreen() {
   const [listening, setListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
-  const recognitionRef = useRef<any>(null);
-  const pressingRef = useRef(false); // track press gesture
-  const lastTranscriptRef = useRef(""); // track latest speech result
+  const recognitionRef = useRef<any>(null); // web only
 
   // Debug panel: raw NEC transmitter
   const [showDebug, setShowDebug] = useState(false);
@@ -106,39 +102,15 @@ export default function HomeScreen() {
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       setVoiceSupported(!!SR);
     } else {
-      setVoiceSupported(true);
-
-      // ═══ listening state is 100% controlled by press gesture ═══
-      const onResult = (e: ExpoSpeechRecognitionResultEvent) => {
-        const text = e.results?.[0]?.transcript;
-        if (text) {
-          lastTranscriptRef.current = text;
-          console.log("[voice] result:", text, "isFinal:", e.isFinal);
-          if (e.isFinal) {
-            // Final result → send immediately
-            ExpoSpeechRecognitionModule.stop();
-            handleSend(text);
-          }
-        }
-      };
-      const onError = (e: ExpoSpeechRecognitionErrorEvent) => {
-        console.log("[voice] native error:", e.message);
-        if (e.message?.includes("permission") || e.message?.includes("not-allowed")) {
-          setVoiceBlocked(true);
-        }
-        // Do NOT set listening=false here — gesture controls it
-      };
-      const onStart = () => { /* listening state is gesture-driven */ };
-      const onEnd = () => { /* listening state is gesture-driven */ };
-
-      ExpoSpeechRecognitionModule.addListener("result", onResult);
-      ExpoSpeechRecognitionModule.addListener("error", onError);
-      ExpoSpeechRecognitionModule.addListener("audiostart", onStart);
-      ExpoSpeechRecognitionModule.addListener("end", onEnd);
-
-      return () => {
-        ExpoSpeechRecognitionModule.removeListeners(1);
-      };
+      // Check if system RecognizerIntent is available (works on Chinese phones
+      // without Google services — uses iFlytek/Baidu/Sogou built-in recognition)
+      const { NativeModules } = require("react-native");
+      const VR = NativeModules.VoiceRecognition;
+      if (VR?.isAvailable) {
+        VR.isAvailable().then((ok: boolean) => setVoiceSupported(ok));
+      } else {
+        setVoiceSupported(false);
+      }
     }
   }, []);
 
@@ -220,41 +192,39 @@ export default function HomeScreen() {
         rec.start();
       } catch (_e: any) {}
     } else {
-      // ── Native: expo-speech-recognition ──
+      // ── Native: System RecognizerIntent (works on Chinese phones) ──
       try {
-        // Explicit RECORD_AUDIO permission (Android 6+)
-        if (Platform.OS === "android") {
-          const granted = await PermissionsAndroid.request(
-            "android.permission.RECORD_AUDIO",
-            {
-              title: "麦克风权限",
-              message: "Natrl 需要麦克风权限来进行语音控制",
-              buttonPositive: "允许",
-              buttonNegative: "拒绝",
-            }
-          );
-          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            setVoiceBlocked(true);
-            addAssistantMsg("麦克风权限未授权，请在系统设置中允许。");
-            return;
+        const granted = await PermissionsAndroid.request(
+          "android.permission.RECORD_AUDIO",
+          {
+            title: "麦克风权限",
+            message: "Natrl 需要麦克风权限来进行语音控制",
+            buttonPositive: "允许",
+            buttonNegative: "拒绝",
           }
-        }
-        // Also call the module's own permission check
-        const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-        if (!perm.granted) {
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
           setVoiceBlocked(true);
-          addAssistantMsg("语音识别权限未授权。");
+          addAssistantMsg("麦克风权限未授权，请在系统设置中允许。");
           return;
         }
-        ExpoSpeechRecognitionModule.start({
-          lang: "zh-CN",
-          interimResults: true,
-          continuous: false,
-        });
-        console.log("[voice] recognition started");
+        const { NativeModules } = require("react-native");
+        const VR = NativeModules.VoiceRecognition;
+        if (!VR) {
+          addAssistantMsg("语音模块未加载");
+          return;
+        }
+        const result = await VR.startListening("zh-CN");
+        if (result?.transcript) {
+          handleSend(result.transcript);
+        }
       } catch (e: any) {
-        console.log("[voice] start error:", e?.message || e);
-        addAssistantMsg("语音启动失败: " + (e?.message || "未知错误"));
+        if (e.code === "NO_ENGINE") {
+          setVoiceBlocked(true);
+          addAssistantMsg("设备不支持语音识别，请安装讯飞/百度输入法");
+        } else if (e.code !== "CANCELLED") {
+          console.log("[voice] error:", e.message);
+        }
       }
     }
   }, [voiceSupported, addAssistantMsg]);
@@ -262,9 +232,8 @@ export default function HomeScreen() {
   const stopVoice = useCallback(() => {
     if (Platform.OS === "web") {
       if (recognitionRef.current) recognitionRef.current.abort();
-    } else {
-      try { ExpoSpeechRecognitionModule.stop(); } catch (_e) {}
     }
+    // Native RecognizerIntent is self-closing, no need to stop
   }, []);
 
   // === SEND ===
@@ -406,22 +375,12 @@ export default function HomeScreen() {
   };
 
   // Hold-to-talk handlers — must be after handleSend
-  const handlePressIn = useCallback(() => {
+  // Voice button: tap to open system recognizer dialog
+  const handleVoicePress = useCallback(() => {
     if (textMode) return;
-    pressingRef.current = true;
-    lastTranscriptRef.current = "";
     setListening(true);
-    startVoice();
+    startVoice().finally(() => setListening(false));
   }, [textMode, startVoice]);
-
-  const handlePressOut = useCallback(() => {
-    pressingRef.current = false;
-    stopVoice();
-    setListening(false);
-    const text = lastTranscriptRef.current.trim();
-    lastTranscriptRef.current = "";
-    if (text) handleSend(text);
-  }, [stopVoice]);
 
   const activeDevice = devices.find((d) => d.verified);
   const isTV = activeDevice?.deviceType === "tv";
@@ -625,13 +584,11 @@ export default function HomeScreen() {
           <View style={styles.vBarRow}>
             <Pressable
               style={[styles.vBtn, listening && styles.vBtnActive, voiceBlocked && styles.vBtnBlocked]}
-              onPressIn={handlePressIn}
-              onPressOut={handlePressOut}
-              delayLongPress={0}>
+              onPress={handleVoicePress}>
               <Text style={styles.vText}>
-                {listening ? "⏺ 聆听中...松开发送"
+                {listening ? "⏺ 聆听中..."
                   : voiceBlocked ? "已阻止（点我重试）"
-                  : "按住说话"}
+                  : "点按说话"}
               </Text>
             </Pressable>
             <TouchableOpacity style={styles.modeSwitch} onPress={() => setTextMode(true)}>

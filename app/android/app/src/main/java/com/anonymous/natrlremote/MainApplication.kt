@@ -16,6 +16,7 @@ import com.facebook.soloader.SoLoader
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ReactNativeHostWrapper
 import com.anonymous.natrlremote.ir.InfraredEmitterPackage
+import com.anonymous.natrlremote.voice.VoiceRecognitionPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -26,6 +27,7 @@ class MainApplication : Application(), ReactApplication {
             val packages = PackageList(this).packages
             // Packages that cannot be autolinked yet can be added manually here:
             packages.add(InfraredEmitterPackage())
+            packages.add(VoiceRecognitionPackage())
             return packages
           }
 
