@@ -609,13 +609,14 @@ async function execProbeBrand(
   ctx.probeStep = 1;
   ctx.probeTotal = variants.length;
 
-  // Update session
+  // Update session — store correct deviceType from the probe
   ctx.session.phase = "discovery";
   ctx.session.probingActive = true;
   ctx.session.probeStep = 1;
   ctx.session.probeTotal = variants.length;
   ctx.session.currentProbeBrand = firstBrandCode;
   ctx.session.deviceId = deviceId;
+  ctx.session.deviceType = isTV ? "tv" : "ac";  // fix: sync with actual probe type
 
   console.log(`[probe] ✅ 变体 ${firstVariant.remote} 的 ${probeCount} 条命令参数已准备`);
 
@@ -639,12 +640,17 @@ async function execRespondProbe(
 ): Promise<string> {
   const reacted: boolean = args.reacted;
 
-  // Find active probe session
-  let deviceId: string | null = null;
-  for (const [id, s] of probeSessions.entries()) {
-    if (!s.complete) {
-      deviceId = id;
-      break;
+  // Find the CORRECT active probe session.
+  // Use ctx.session.deviceId set by the most recent probe_brand/discover_device.
+  // Only fall back to first active if no deviceId in session context.
+  let deviceId: string | null = ctx.session.deviceId || null;
+  if (deviceId) {
+    const s = probeSessions.get(deviceId);
+    if (!s || s.complete) deviceId = null;
+  }
+  if (!deviceId) {
+    for (const [id, s] of probeSessions.entries()) {
+      if (!s.complete) { deviceId = id; break; }
     }
   }
 
@@ -683,7 +689,8 @@ async function execRespondProbe(
 
     const now = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z/, "");
     const room = ctx.session.room || "卧室";
-    const deviceTypeStr = (ctx.session.deviceType as Device["deviceType"]) || "ac";
+    const catId = (currentStep as any)._categoryId || 1;
+    const deviceTypeStr: Device["deviceType"] = catId === 2 ? "tv" : "ac";
     const typeWord = deviceTypeStr === "tv" ? "电视" : "空调";
     const devName = ctx.session.pendingDeviceName || `${room}${typeWord}`;
     const newDevice: Device = {
@@ -744,8 +751,9 @@ async function execRespondProbe(
     const nextStep = session.steps[nextUnattempted];
     nextStep.attempted = true;
     const brandCode = nextStep.brandCode;
-    const isTV2 = ctx.session.deviceType === "tv";
-    const catId2 = isTV2 ? 2 : 1;
+    // Use the session's stored category, NOT ctx.session.deviceType (which may have changed)
+    const catId2: number = (nextStep as any)._categoryId || 1;
+    const isTV2 = catId2 !== 1;
     const nextMd5 = (nextStep as any)._binaryMd5 as string;
     const nextVariant = nextStep.subModels[0];
 
