@@ -241,12 +241,34 @@ async function lookupKeyTiming(
 
 const IREXT_ENCODE_URL = process.env.IREXT_ENCODE_URL || "http://localhost:8002";
 
-/** Resolve brand → binary_md5 via irext MySQL */
+/** Resolve brand → binary_md5 via irext MySQL. Optionally filter by remote variant name. */
 async function resolveBinaryMd5(
   brandNameEn: string,
   categoryId: number,
+  remote?: string,
 ): Promise<string | null> {
   const p = getIrextPool();
+  if (remote) {
+    // Exact match by variant name (e.g., "remote_tv_018")
+    const [rows] = await p.query(
+      `SELECT ri.binary_md5 FROM remote_index ri
+       JOIN brand b ON ri.brand_id = b.id
+       WHERE UPPER(b.name_en) = UPPER(?) AND ri.category_id = ? AND ri.remote = ?
+       LIMIT 1`,
+      [brandNameEn, categoryId, remote],
+    ) as any;
+    if (rows.length > 0) return rows[0].binary_md5;
+    // Fallback: try LIKE match
+    const [rows2] = await p.query(
+      `SELECT ri.binary_md5 FROM remote_index ri
+       JOIN brand b ON ri.brand_id = b.id
+       WHERE UPPER(b.name_en) = UPPER(?) AND ri.category_id = ? AND ri.remote LIKE ?
+       LIMIT 1`,
+      [brandNameEn, categoryId, `%${remote}%`],
+    ) as any;
+    if (rows2.length > 0) return rows2[0].binary_md5;
+  }
+  // No remote filter — return first variant
   const [rows] = await p.query(
     `SELECT ri.binary_md5 FROM remote_index ri
      JOIN brand b ON ri.brand_id = b.id
@@ -297,11 +319,13 @@ const TV_KEY_MAP: Record<string, number> = {
 /**
  * Get raw timing for a fixed-function device key (TV, STB, fan, etc.)
  * Uses irext-encode service + .bin files.
+ * @param subModel — optional remote variant name (e.g., "remote_tv_018"). If provided, uses that specific variant.
  */
 export async function getFixedKeyTiming(
   brandCode: string,
   deviceType: string,
   command: string,
+  subModel?: string | null,
 ): Promise<IRCommand | null> {
   const brandNameEn = resolveBrandNameEn(brandCode);
   if (!brandNameEn) {
@@ -314,16 +338,17 @@ export async function getFixedKeyTiming(
     return null;
   }
 
-  const md5 = await resolveBinaryMd5(brandNameEn, cat.id);
+  // If we know the specific variant (from probe match), use its binary_md5
+  const md5 = await resolveBinaryMd5(brandNameEn, cat.id, subModel || undefined);
   if (!md5) {
-    console.log(`[irext] ⚠ No .bin for ${brandNameEn}/${cat.name}`);
+    console.log(`[irext] ⚠ No .bin for ${brandNameEn}/${cat.name}${subModel ? ` variant=${subModel}` : ""}`);
     return null;
   }
 
   const keyCode = TV_KEY_MAP[command] ?? 0;
   try {
     const timing = await callEncodeKey(md5, cat.id, keyCode);
-    console.log(`[irext] ✅ ${brandNameEn} ${command}(key=${keyCode}): ${timing.length} pulses`);
+    console.log(`[irext] ✅ ${brandNameEn} ${command}(key=${keyCode})${subModel ? ` variant=${subModel}` : ""}: ${timing.length} pulses`);
     return { brand_code: brandCode, protocol: "irext", carrier_freq: 38000, raw_timing: timing };
   } catch (e: any) {
     console.error(`[irext] Key encode failed for ${brandNameEn}/${command}: ${e.message}`);

@@ -1058,8 +1058,8 @@ async function execControlTv(
   };
   const cmdName = cmdNames[command] || command;
 
-  // Look up raw timing from irext
-  const irCmd = await getFixedKeyTiming(device.brandCode!, device.deviceType || "tv", command);
+  // Look up raw timing from irext — use the specific variant that was matched during probe
+  const irCmd = await getFixedKeyTiming(device.brandCode!, device.deviceType || "tv", command, device.subModel);
 
   if (!irCmd || irCmd.raw_timing.length === 0) {
     return JSON.stringify({
