@@ -1,3 +1,6 @@
 [submodule "firmware/IRremoteESP8266"]
 	path = firmware/IRremoteESP8266
 	url = https://github.com/crankyoldgit/IRremoteESP8266.git
+[submodule "irext-core"]
+	path = irext-core
+	url = https://github.com/irext/core.git
