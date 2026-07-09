@@ -318,8 +318,8 @@ const TV_KEY_MAP: Record<string, number> = {
 
 /**
  * Get raw timing for a fixed-function device key (TV, STB, fan, etc.)
- * Uses irext-encode service + .bin files.
- * @param subModel — optional remote variant name (e.g., "remote_tv_018"). If provided, uses that specific variant.
+ * Uses .bin encoding (irext-encode) for correct per-key timing.
+ * @param subModel — optional remote variant name (e.g., "remote_tv_018").
  */
 export async function getFixedKeyTiming(
   brandCode: string,
@@ -338,7 +338,7 @@ export async function getFixedKeyTiming(
     return null;
   }
 
-  // If we know the specific variant (from probe match), use its binary_md5
+  // Use .bin encoding via irext-encode
   const md5 = await resolveBinaryMd5(brandNameEn, cat.id, subModel || undefined);
   if (!md5) {
     console.log(`[irext] ⚠ No .bin for ${brandNameEn}/${cat.name}${subModel ? ` variant=${subModel}` : ""}`);
@@ -348,7 +348,7 @@ export async function getFixedKeyTiming(
   const keyCode = TV_KEY_MAP[command] ?? 0;
   try {
     const timing = await callEncodeKey(md5, cat.id, keyCode);
-    console.log(`[irext] ✅ ${brandNameEn} ${command}(key=${keyCode})${subModel ? ` variant=${subModel}` : ""}: ${timing.length} pulses`);
+    console.log(`[irext] ✅ ${brandNameEn} ${command}(key=${keyCode})${subModel ? ` var=${subModel}` : ""}: ${timing.length} pulses`);
     return { brand_code: brandCode, protocol: "irext", carrier_freq: 38000, raw_timing: timing };
   } catch (e: any) {
     console.error(`[irext] Key encode failed for ${brandNameEn}/${command}: ${e.message}`);

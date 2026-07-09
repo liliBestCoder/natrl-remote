@@ -161,8 +161,8 @@ export async function executeToolCallWithTiming(
   }
 
   if (toolCall.name === "control_tv") {
-    // TV commands: repeat 3x with 45ms gap
-    return emitRawTiming(carrierFreq, rawTiming, repeat || 3);
+    // TV commands: no repeat — timing already includes protocol-specific repeat frame
+    return emitRawTiming(carrierFreq, rawTiming, repeat || 1);
   }
 
   return emitRawTiming(carrierFreq, rawTiming, repeat);
