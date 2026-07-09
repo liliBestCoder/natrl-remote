@@ -151,13 +151,11 @@ export const TOOL_DEFINITIONS = [
     function: {
       name: "probe_brand",
       description:
-        "云端红外品牌探测。对一个品牌发送多条不同参数的红外命令（开机制冷、制热、关机等），" +
-        "让用户观察空调是否有任何反应（蜂鸣、灯闪、开机等）。" +
-        "每次调用尝试一个品牌的多条命令，用户反馈'有反应'或'没反应'后决定下一步。" +
-        "通常在 discover_device 之后自动调用。" +
-        "如果用户主动说了品牌（如'格力'、'whirlpool'），请将品牌名填入 brand_hint 参数，系统会优先尝试该品牌。" +
-        "如果用户不知道品牌，不要传 brand_hint，系统会按市场占有率从高到低自动探测。" +
-        "重要：调用此函数前必须先询问用户品牌。如果用户说了品牌，立即调用不要重复询问。",
+        "红外品牌探测。对用户指定的品牌，遍历其所有子型号，每个子型号发送5条(空调)/1条(电视)红外命令。" +
+        "用户反馈'有反应'→设备注册，'没反应'→换下一个子型号继续。" +
+        "⛔ 必须提供 brand_hint（品牌名），不传等于跳过此函数。" +
+        "⛔ 用户不知道品牌时禁止调用此函数，应告诉用户去查看遥控器或机身标签。" +
+        "通常在 discover_device 之后，用户说出品牌时调用。",
       parameters: {
         type: "object",
         properties: {
@@ -490,25 +488,38 @@ async function execProbeBrand(
   const devName = ctx.session.pendingDeviceName
     || (effectiveDeviceType === "tv" ? "电视" : "空调");
 
-  // Get all brand codes to probe
-  const allBrands = await getProbeOrder(effectiveDeviceType);
+  // ── Brand resolution ──
+  // If user knows the brand: ONLY probe that brand's sub-models.
+  // If user doesn't know: don't probe — ask them to find out first.
+  let orderedBrands: string[] = [];
 
-  // Reorder based on brand hint
-  let orderedBrands = allBrands;
-  if (hint) {
-    ctx.session.brandHint = hint;
-    const matchedCodes = await matchBrandHint(hint, effectiveDeviceType);
-    console.log(`[probe] 用户提示品牌: "${hint}" (deviceType=${effectiveDeviceType}) → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
-    if (matchedCodes.length > 0) {
-      orderedBrands = [...matchedCodes.filter(b => allBrands.includes(b)), ...allBrands.filter(b => !matchedCodes.includes(b))];
-      console.log(`[probe] 重排: ${orderedBrands.join(" → ")}`);
-    } else {
-      console.log(`[probe] ⚠️ 品牌"${hint}"不在${effectiveDeviceType}库中，按默认顺序探测`);
-    }
-  } else {
-    ctx.session.brandHint = undefined;
-    console.log(`[probe] 无品牌提示，默认顺序探测 (deviceType=${effectiveDeviceType})`);
+  if (!hint) {
+    // No brand hint → can't probe
+    const deviceWord = effectiveDeviceType === "tv" ? "电视" : "空调";
+    return JSON.stringify({
+      success: false,
+      status: "no_brand",
+      message: `请问你家里的${deviceWord}是什么品牌的？（比如格力、美的、海信等）如果不知道品牌，可以先看看遥控器或机身标签。`,
+    });
   }
+
+  ctx.session.brandHint = hint;
+  const matchedCodes = await matchBrandHint(hint, effectiveDeviceType);
+  console.log(`[probe] 用户提示品牌: "${hint}" (deviceType=${effectiveDeviceType}) → 匹配: ${matchedCodes.length > 0 ? matchedCodes.join(", ") : "无"}`);
+
+  if (matchedCodes.length === 0) {
+    // Brand not in database
+    const deviceWord = effectiveDeviceType === "tv" ? "电视" : "空调";
+    return JSON.stringify({
+      success: false,
+      status: "brand_not_found",
+      message: `抱歉，数据库中没有找到"${hint}"这个品牌的${deviceWord}遥控码。试试换个说法？（比如英文名或简称）`,
+    });
+  }
+
+  // ONLY probe the matched brand(s), NOT all brands
+  orderedBrands = matchedCodes;
+  console.log(`[probe] 只探测用户指定的品牌: ${orderedBrands.join(", ")} (共 ${orderedBrands.length} 个品牌)`);
 
   // ── Build probe session (one step per brand, sub-models per brand) ──
   const session: ProbeSession = {
@@ -707,16 +718,24 @@ async function execRespondProbe(
     }
   }
 
-  // No more sub-models → try next brand
+  // No more sub-models of current brand → try next matched brand
   const nextUnattempted = session.steps.findIndex((s: import("./types").ProbeStep) => !s.attempted);
   if (nextUnattempted < 0) {
+    // All brands + sub-models exhausted
     session.complete = true;
     probeSessions.delete(deviceId);
     ctx.session.probingActive = false;
     ctx.session.phase = "discovery";
     ctx.phase = "discovery";
+
+    // If user specified a brand, suggest trying another brand
+    const brandHint = ctx.session.brandHint;
+    const hintMsg = brandHint
+      ? `"${brandHint}"的所有子型号都没反应。\n你可以试试换一个品牌名重新探测（比如"美的"、"海尔"等）。`
+      : "已尝试全部品牌均未匹配。建议检查手机红外硬件。";
+
     return JSON.stringify({ success: false, status: "exhausted", total_attempted: session.steps.length,
-      message: `已尝试全部品牌均未匹配。建议检查手机红外硬件。`,
+      message: hintMsg,
     });
   }
 
