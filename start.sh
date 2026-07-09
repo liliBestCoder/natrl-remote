@@ -75,9 +75,10 @@ do_status() {
         fi
     }
     echo -e "  ${CYAN}Processes:${NC}"
-    check_proc "mysql"    "$PID_DIR/mysql.pid"
-    check_proc "redis"    "$PID_DIR/redis.pid"
-    check_proc "backend"  "$PID_DIR/backend.pid"
+    check_proc "mysql"         "$PID_DIR/mysql.pid"
+    check_proc "redis"         "$PID_DIR/redis.pid"
+    check_proc "irext-encode"  "$PID_DIR/irext-encode.pid"
+    check_proc "backend"       "$PID_DIR/backend.pid"
     echo ""
     echo -e "  ${CYAN}Endpoints:${NC}"
     check_api "backend"  "http://localhost:3000/health"
@@ -145,6 +146,31 @@ start_redis() {
         err "Redis failed to start!"
         return 1
     fi
+}
+
+# ─── Start irext-encode ────────────────────────────────────
+start_irext_encode() {
+    local irext_pid=$(lsof -ti:8002 2>/dev/null)
+    if [ -n "$irext_pid" ]; then
+        kill "$irext_pid" 2>/dev/null
+        log "  Killed old irext-encode (pid $irext_pid)"
+        sleep 1
+    fi
+    log "Starting irext-encode..."
+    cd "$PROJECT_DIR/backend/irext_encode"
+    nohup uvicorn server:app --host 0.0.0.0 --port 8002 &>"$LOG_DIR/irext-encode.log" &
+    echo $! > "$PID_DIR/irext-encode.pid"
+
+    for i in $(seq 1 15); do
+        if curl -s --max-time 2 http://localhost:8002/health &>/dev/null; then
+            log "  irext-encode ready (pid $(cat $PID_DIR/irext-encode.pid))"
+            cd "$PROJECT_DIR"
+            return 0
+        fi
+        sleep 1
+    done
+    warn "irext-encode may still be starting (check $LOG_DIR/irext-encode.log)"
+    cd "$PROJECT_DIR"
 }
 
 # ─── Start Backend ─────────────────────────────────────────
@@ -238,7 +264,11 @@ case "$CMD" in
         log "─────────── Redis ───────────"
         start_redis
 
-        # 4. Backend — always kill old and restart
+        # 4. irext-encode — always kill old and restart
+        log "───────── irext-encode ────────"
+        start_irext_encode
+
+        # 5. Backend — always kill old and restart
         log "────────── Backend ──────────"
         start_backend
 
@@ -247,6 +277,7 @@ case "$CMD" in
         echo -e "${GREEN}  All services started!${NC}"
         echo ""
         echo -e "  Backend:     ${CYAN}http://localhost:3000/health${NC}"
+        echo -e "  irext-encode:${CYAN}http://localhost:8002/health${NC}"
         echo -e "  MySQL:       ${CYAN}localhost:3306 (natrl/natrl_dev)${NC}"
         echo -e "  Redis:       ${CYAN}localhost:6379${NC}"
         echo ""

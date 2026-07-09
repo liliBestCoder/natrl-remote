@@ -1,4 +1,4 @@
-# Natrl Remote — 环境上下文 (2026-07-05)
+# Natrl Remote — 环境上下文 (2026-07-09)
 
 ## 当前状态
 
@@ -6,109 +6,111 @@
 
 | 服务 | 状态 | 端口 | 备注 |
 |------|------|------|------|
-| MySQL 8.4 | ✅ 运行中 | 3306 | 数据库 `natrl`，用户 `natrl/natrl_dev` |
+| MySQL 8.4 | ✅ 运行中 | 3306 | 数据库 `natrl`(natrl_dev) + `irext`(root) |
 | Redis 8.0 | ✅ 运行中 | 6379 | |
-| Backend (Node) | ✅ 运行中 | 3000 | `npx tsx src/server.ts`，MOCK_MQTT=true, MOCK_REDIS=false |
-| Waveform Engine | ✅ 运行中 | 8001 | Python FastAPI, uvicorn |
-| Mosquitto | ❌ 未安装 | — | 不需要，MQTT mock 模式 |
+| Backend (Node) | ✅ 运行中 | 3000 | `npx tsx src/server.ts`，需要 `IREXT_ENCODE_URL=http://localhost:8002` |
+| irext-encode (NEW) | ✅ 运行中 | 8002 | Python FastAPI, ctypes→libirdecode.so, 3904 .bin 已加载 |
+| Waveform Engine | ⚠️ 待废弃 | 8001 | 被 irext-encode 替代，仍运行作为回退 |
 
 ### 数据库
 
 ```
-MySQL: natrl
-├── ir_protocols   (17 rows — 16 品牌协议)
-├── ir_codes       (7500 rows — 预计算红外码)
-└── captured_signals (0 rows)
+MySQL:
+├── natrl (用户: natrl/natrl_dev)
+│   ├── ir_protocols   (25 rows)
+│   ├── ir_codes       (7500 rows)
+│   └── captured_signals (0 rows)
+│
+└── irext (用户: root)
+    ├── brand           (1,818 rows — 品牌)
+    ├── remote_index    (7,051 rows — 遥控器索引)
+    ├── decode_remote   (108,680 rows — 预计算时序)
+    ├── ir_protocol     (222 rows — 协议定义)
+    ├── key_mapping     (16 rows — 按键映射)
+    └── category        (16 rows — 设备类别)
 ```
 
 ### 后端环境变量
 
-```
-WAVEFORM_ENGINE_URL=http://localhost:8001
+```bash
+IREXT_ENCODE_URL=http://localhost:8002   # NEW: irext 编码服务
+WAVEFORM_ENGINE_URL=http://localhost:8001 # OLD: 待废弃
 MOCK_REDIS=false
 MOCK_MQTT=true
 REDIS_URL=redis://localhost:6379
 ```
 
-### 后端 API 验证通过
-
-```
-GET  /health          → {"status":"ok"}
-POST /api/control     → NLP → 设备发现 → 品牌探测 → IR 码返回 ✅
-POST /api/devices     → 设备 CRUD ✅
-```
-
-## 关键文件修改
-
-### 本次 pg→mysql 迁移修改：
-1. `waveform-engine/server.py` — 注释 "PostgreSQL" → "MySQL"
-2. `backend/package.json` — 移除 `@types/pg`
-3. `backend/db/init.sql` — DROP INDEX IF EXISTS → 条件判断 (MySQL 8.4 不兼容)
-4. `backend/db/02_ir_codes_data.sql` — `'{...}'` → `'[...]'` (PG数组→JSON数组)
-5. `backend/db/init.sql` — `state_bytes VARCHAR(64)` → `VARCHAR(128)` (daikin 最长72字符)
-
-## APK 打包进度
+## irext 集成进度
 
 ### ✅ 已完成
-- Android SDK 已安装到 `/opt/android-sdk/`
-  - platforms: android-34
-  - build-tools: 34.0.0
-  - platform-tools: 37.0.0
-- JDK 25 已安装（太新！）
-- App 图标已生成 (`app/assets/icon.png`)
-- `npx expo prebuild --platform android` ✅ 成功生成 `app/android/`
-- Gradle 8.10.2 已下载
 
-### ❌ 阻塞问题
-```
-Unsupported class file major version 69
-```
-**原因**: JDK 25 (class version 69) 太新，Gradle 8.10.2 最高支持 Java 22  
-**解决方案**: 需要安装 JDK 17 或 21
+1. **MySQL irext DB 导入** — 105MB SQL dump，11 张表，~300K 行
+2. **irext_binaries.zip 解压** — 5,125 个 .bin 协议文件
+3. **irext-core 源码克隆** — GitHub: irext/core → `/root/natrl-remote/irext-core/`
+4. **libirdecode.so 编译** — gcc 直接编译 13 个 C 文件，143KB，版本 1.5.2
+5. **Python ctypes 绑定** — `backend/irext_encode/irext_binding.py`，加载 .so 调用 C API
+6. **irext-encode FastAPI 服务** — `backend/irext_encode/server.py`，:8002
+   - POST `/encode_ac` — AC 状态 → raw_timing ✅
+   - POST `/encode_key` — 固定按键 → raw_timing ✅
+   - 启动时全量加载 3,904 个唯一 .bin 到内存
+7. **irext-engine.ts 重写** — 不再依赖 waveform-engine / decode_remote，改为 MySQL binary_md5 查询 + HTTP 调 irext-encode
+8. **tools.ts 适配** — execControlAc/Tv/probe 全部走新的 irext-engine
+9. **前端适配** — HomeScreen.tsx 优先用 raw_timing 直发，ir-emitter.ts 新增 emitRawTiming
 
-```bash
-apt-get install -y openjdk-17-jdk-headless
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
-cd /root/natrl-remote/app/android
-./gradlew assembleRelease
-```
+### 🔄 待处理
 
-### APK 输出位置
-编译成功后 APK 在:
-```
-/root/natrl-remote/app/android/app/build/outputs/apk/release/app-release.apk
-```
-
-### App 连接后端
-App 硬编码后端地址在 `app/src/services/api.ts`:
-```typescript
-return "http://192.168.21.9:3000";  // ← 需改为实际服务器 IP
-```
+- ~~**tools.ts 重启后仍有旧代码**~~ ✅ 已修复
+- ~~**irext-encode 未加入 start.sh**~~ ✅ 已加入
+- **waveform-engine 待正式下线** — 移除 `/waveform-engine/`
+- **IRremoteESP8266 待清理** — 被 irext-core 替代，JNI 不再需要
 
 ## 快速恢复命令
 
 ```bash
-# 启动 MySQL（如果没跑）
-mysqld --user=root --datadir=/var/lib/mysql &
+# 一键启动
+cd /root/natrl-remote && bash start.sh start
 
-# 启动 Redis
-redis-server --daemonize yes
+# 手动启动 irext-encode（start.sh 暂未包含）
+cd /root/natrl-remote/backend/irext_encode
+nohup uvicorn server:app --host 0.0.0.0 --port 8002 > /root/natrl-remote/logs/irext-encode.log 2>&1 &
 
-# 启动波形引擎
-cd /root/natrl-remote/waveform-engine
-DATABASE_URL=mysql+pymysql://natrl:natrl_dev@localhost:3306/natrl \
-  uvicorn server:app --host 0.0.0.0 --port 8001 &
-
-# 启动后端
+# 重启后端（带 irext-encode URL）
+fuser -k 3000/tcp
 cd /root/natrl-remote/backend
+IREXT_ENCODE_URL=http://localhost:8002 \
 WAVEFORM_ENGINE_URL=http://localhost:8001 \
 MOCK_REDIS=false MOCK_MQTT=true \
 REDIS_URL=redis://localhost:6379 \
-npx tsx src/server.ts &
+nohup npx tsx src/server.ts > /root/natrl-remote/logs/backend.log 2>&1 &
 
-# 构建 APK
-export ANDROID_HOME=/opt/android-sdk
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
-cd /root/natrl-remote/app/android
-./gradlew assembleRelease
+# 验证
+curl http://localhost:8002/health  # irext-encode: {loaded_bins:3904}
+curl http://localhost:3000/health   # backend
 ```
+
+## 架构图（新）
+
+```
+NLP (Node.js) → irext-engine.ts
+                  ├── MySQL irext DB: brand → binary_md5
+                  └── HTTP POST irext-encode:8002
+                        └── irext_binding.py (ctypes)
+                              └── libirdecode.so (irext-core C)
+                                    └── .bin 协议文件 (3904 个)
+                                          └── raw_timing → APK transmit()
+```
+
+## 关键文件
+
+| 文件 | 用途 |
+|------|------|
+| `backend/src/irext-engine.ts` | MySQL 查询 + irext-encode HTTP 调用 |
+| `backend/irext_encode/server.py` | FastAPI 编码服务 |
+| `backend/irext_encode/irext_binding.py` | ctypes 包装 C API |
+| `backend/irext_encode/bin_loader.py` | 启动时加载全部 .bin |
+| `irext-core/build/libirdecode.so` | C 解码库 (143KB) |
+| `irext-core/decoder/src/` | C 源码 (13 .c 文件) |
+| `irext-data/irext-binaries_20260519/` | 5,125 个 .bin 协议文件 |
+| `app/src/services/ir-emitter.ts` | 前端 IR 发射 (emitRawTiming) |
+| `docs/superpowers/specs/2026-07-09-irext-integration-design.md` | 设计文档 |
+| `docs/superpowers/plans/2026-07-09-irext-integration.md` | 执行计划 |

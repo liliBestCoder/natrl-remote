@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
-import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC } from "../services/ir-emitter";
+import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC, emitRawTiming, executeToolCallWithTiming } from "../services/ir-emitter";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -273,36 +273,75 @@ export default function HomeScreen() {
         setSetupDeviceId(null);
       }
 
-      // ── Execute tool_call via local .so encoder + IR blaster ──
+      // ── Execute tool_call — NEW: raw_timing from backend, client just transmits ──
       if (result.toolCall) {
         const tc = result.toolCall;
         console.log(`[app] tool_call: ${tc.name}`, JSON.stringify(tc.args).substring(0, 200));
 
-        if (tc.name === "probe_brand" && tc.args.probe_commands) {
-          // Multi-command probe sequence
+        // Check if backend sent raw_timing (new irext-powered mode)
+        if (tc.args.raw_timing && tc.args.raw_timing.length > 0) {
+          // ═══ NEW MODE: backend encoded, client just emits ═══
+          const irResult = await executeToolCallWithTiming(tc);
+          const nameMap: Record<string, string> = {
+            control_ac: "❄️ AC", control_tv: "📺 TV", probe_brand: "🔍 探测",
+          };
+          const prefix = nameMap[tc.name] || "📡";
+          if (irResult.success) {
+            setIrStatus(`${prefix} 红外已发射 | ${tc.args.raw_timing.length} pulses @ ${tc.args.carrier_freq || 38000}Hz`);
+          } else {
+            setDiag(irResult.method === "no_hardware"
+              ? `❌ 无红外硬件\n→ 手机不支持 ConsumerIrManager`
+              : `❌ 发射失败\n→ reason: ${irResult.method}`);
+          }
+          setTimeout(() => setIrStatus(null), 8000);
+
+        } else if (tc.name === "probe_brand" && tc.args.probe_commands) {
+          // Probe mode: prefer raw_timing from backend, fallback to .so encoder
           const brandCode = tc.args.brand_code || "unknown";
           const probeCmds = tc.args.probe_commands;
           const emitResults: string[] = [];
 
-          // Detect TV probe (temperature=0, mode="") vs AC probe
           const isTVProbe = probeCmds.length === 1 && (probeCmds[0] as any).temperature === 0;
           setProbeDeviceType(isTVProbe ? "tv" : "ac");
 
-          if (isTVProbe) {
-            // TV probe: send power toggle once
-            const cmd = probeCmds[0];
+          // Check if first command has raw_timing (new irext mode)
+          const hasRawTiming = probeCmds.length > 0 && (probeCmds[0] as any).raw_timing?.length > 0;
+
+          if (hasRawTiming) {
+            // ═══ NEW MODE: emit raw_timing from backend directly ═══
+            for (let i = 0; i < probeCmds.length; i++) {
+              const cmd = probeCmds[i] as any;
+              const idx = i + 1;
+              const result = await emitRawTiming(cmd.carrier_freq || 38000, cmd.raw_timing, 1);
+              const icon = result.success ? "📡" : "❌";
+              emitResults.push(`${icon} ${idx}/${probeCmds.length}: ${cmd.label}`);
+              setIrStatus(`🔍 探测: ${brandCode}\n${emitResults.slice(-3).join("\n")}`);
+
+              if (i < probeCmds.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+            }
+            const successCount = emitResults.filter(r => r.startsWith("📡")).length;
+            if (successCount === probeCmds.length) {
+              setIrStatus(`✅ ${probeCmds.length}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
+            } else if (successCount > 0) {
+              setIrStatus(`⚠️ ${successCount}/${probeCmds.length} 条已发射 (${brandCode})\n观察空调是否有反应...`);
+            } else {
+              setDiag(`❌ 无红外硬件\n→ 手机不支持红外发射 (${brandCode})`);
+            }
+            setTimeout(() => setIrStatus(null), 10000);
+
+          } else if (isTVProbe) {
+            // Legacy TV probe
             const irResult = await encodeAndEmitTV(brandCode, "power");
             if (irResult.success) {
               setIrStatus(`📺 已发送: ${brandCode} 开关命令\n观察电视是否有反应...`);
             } else {
-              const errMsg = irResult.method === "no_encoder"
-                ? `❌ 红外编码模块未加载\n→ libnatrl_ir.so 未找到，请确认APK包含原生库`
-                : `❌ TV发射失败\n→ brand: ${brandCode}, reason: ${irResult.method}`;
-              setDiag(errMsg);
+              setDiag(`❌ TV发射失败\n→ brand: ${brandCode}, reason: ${irResult.method}`);
             }
             setTimeout(() => setIrStatus(null), 10000);
           } else {
-            // AC probe: multi-command sequence
+            // Legacy AC probe via .so encoder
             encodeAndEmitProbeSequence(
               brandCode,
               probeCmds.map((c: any) => ({
@@ -337,6 +376,7 @@ export default function HomeScreen() {
           }
 
         } else if (tc.name === "control_ac") {
+          // Legacy fallback
           const irResult = await encodeAndEmit(
             tc.args.brand_code || "gree",
             tc.args.temperature || 26,
@@ -354,6 +394,7 @@ export default function HomeScreen() {
           setTimeout(() => setIrStatus(null), 6000);
 
         } else if (tc.name === "control_tv") {
+          // Legacy fallback
           const irResult = await encodeAndEmitTV(
             tc.args.brand_code || "hisense",
             tc.args.command || "power",

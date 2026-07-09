@@ -105,6 +105,69 @@ const InfraredEmitter: InfraredEmitterNative | null =
 const InfraredEncoder: InfraredEncoderNative | null =
   NativeModules?.InfraredEncoder ?? null;
 
+// ─── NEW (irext-powered): Direct raw timing transmission ────────────
+//
+// Backend generates raw_timing + carrier_freq → client just emits.
+// No native encoder (.so) needed anymore!
+
+export async function emitRawTiming(
+  carrierFreq: number,
+  rawTiming: number[],
+  repeat: number = 1,
+): Promise<{ success: boolean; method: string }> {
+  console.log(`[ir-emitter] Raw emit: ${rawTiming.length} pulses @ ${carrierFreq}Hz x${repeat}`);
+
+  if (Platform.OS !== "android" || !InfraredEmitter) {
+    console.warn("[ir-emitter] No IR hardware available");
+    return { success: false, method: "no_hardware" };
+  }
+
+  for (let i = 0; i < repeat; i++) {
+    try {
+      const ok = await InfraredEmitter.transmit(carrierFreq, rawTiming);
+      if (!ok) {
+        console.warn(`[ir-emitter] Transmit failed on repeat ${i + 1}/${repeat}`);
+        if (i === 0) return { success: false, method: "transmit_failed" };
+      }
+      if (i < repeat - 1) {
+        // Gap between repeats (typical: 45ms for TV, 100ms for AC)
+        await new Promise(resolve => setTimeout(resolve, repeat > 2 ? 45 : 100));
+      }
+    } catch (e: any) {
+      console.warn(`[ir-emitter] Transmit error: ${e.message}`);
+      return { success: false, method: "transmit_error" };
+    }
+  }
+
+  console.log(`[ir-emitter] Emitted ${repeat}x OK`);
+  return { success: true, method: "android_raw" };
+}
+
+/**
+ * Handle a tool_call that contains raw_timing directly from backend.
+ * This is the NEW architecture — backend encodes, client transmits.
+ */
+export async function executeToolCallWithTiming(
+  toolCall: { name: string; args: any; message?: string },
+): Promise<{ success: boolean; method: string }> {
+  const args = toolCall.args || {};
+  const carrierFreq = args.carrier_freq || 38000;
+  const rawTiming = args.raw_timing || [];
+  const repeat = args.repeat || 1;
+
+  if (!rawTiming || rawTiming.length === 0) {
+    console.warn("[ir-emitter] No raw_timing in tool_call");
+    return { success: false, method: "no_timing" };
+  }
+
+  if (toolCall.name === "control_tv") {
+    // TV commands: repeat 3x with 45ms gap
+    return emitRawTiming(carrierFreq, rawTiming, repeat || 3);
+  }
+
+  return emitRawTiming(carrierFreq, rawTiming, repeat);
+}
+
 // ─── Public API ────────────────────────────────────────────────────
 
 let onIrEmitted: ((cmd: IRCommand) => void) | null = null;

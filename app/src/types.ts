@@ -73,6 +73,11 @@ export interface ToolCallArgs {
   probe_brand?: string;
   probe_step?: number;
   probe_total?: number;
+  // ═══ NEW (irext-powered): raw timing from backend → transmit directly ═══
+  raw_timing?: number[];
+  carrier_freq?: number;
+  protocol?: string;
+  repeat?: number;
 }
 
 export interface ToolCall {

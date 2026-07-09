@@ -4,13 +4,11 @@
  * DeepSeek function calling tools. The LLM decides which tool(s) to call
  * and what arguments to pass. The backend just executes and returns results.
  *
- * ═══ NEW ARCHITECTURE ═══
- * Backend: NLP intent analysis → produces tool_call JSON (parameters only)
- * Client:  Receives tool_call → calls local .so library (IRremoteESP8266)
- *          → generates raw_timing → emits via Android ConsumerIrManager
+ * ═══ NEW ARCHITECTURE (irext-powered) ═══
+ * Backend: NLP → irext DB lookup / waveform-engine encode → raw_timing
+ * Client:  Receives raw_timing + carrier_freq → ConsumerIrManager.transmit()
  *
- * No IR waveform data flows through the backend anymore.
- * The .so library is compiled locally and packaged with the APK.
+ * The frontend is thin: no encoding logic, just emit raw pulses.
  *
  * IR limitation: infrared is TRANSMIT-ONLY. We cannot read physical state.
  */
@@ -42,6 +40,7 @@ export interface ToolContext {
 const probeSessions = new Map<string, ProbeSession>();
 
 import { matchBrandHint, getProbeOrder, getBrandDisplay } from "./brand-db";
+import { getACTiming, getFixedKeyTiming } from "./irext-engine";
 
 // ─── AC Sub-Model Mapping ──────────────────────────────────────────
 // ESP8266 library supports multiple remote models per brand.
@@ -60,6 +59,61 @@ const AC_SUB_MODELS: Record<string, string[]> = {
   kelon:     ["DG11R201"],
   // midea, daikin, mitsubishi, samsung, carrier, electra, coolix: single model, no sub-model enum
 };
+
+// ─── Probe command helper ──────────────────────────────────────────
+
+const PROBE_COMBOS_AC = [
+  { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
+  { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
+  { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
+  { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
+  { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
+];
+
+const PROBE_COMBOS_TV = [
+  { temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" },
+];
+
+async function buildProbeCommandsWithTiming(
+  brandCode: string,
+  isTV: boolean,
+): Promise<any[]> {
+  const combos = isTV ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
+  const result: any[] = [];
+
+  for (const c of combos) {
+    let raw_timing: number[] = [];
+    let carrier_freq = 38000;
+    try {
+      if (isTV) {
+        const irCmd = await getFixedKeyTiming(brandCode, "tv", "power");
+        if (irCmd) {
+          raw_timing = irCmd.raw_timing;
+          carrier_freq = irCmd.carrier_freq;
+        }
+      } else {
+        const irCmd = await getACTiming(brandCode, c.temperature || 26, c.mode || "cool", c.fan_speed || "auto", c.power);
+        raw_timing = irCmd.raw_timing;
+        carrier_freq = irCmd.carrier_freq;
+      }
+    } catch (e: any) {
+      console.warn(`[probe] timing gen failed for ${brandCode}/${c.label}: ${e.message}`);
+    }
+    result.push({
+      temperature: c.temperature || 0,
+      mode: c.mode || "",
+      fan_speed: c.fan_speed || "",
+      power: c.power,
+      label: c.label,
+      raw_timing,
+      carrier_freq,
+    });
+  }
+
+  const validCount = result.filter(c => c.raw_timing.length > 0).length;
+  console.log(`[probe] ${brandCode}: ${validCount}/${result.length} commands have raw_timing`);
+  return result;
+}
 
 // ─── Tool Definitions (DeepSeek format) ──────────────────────────────
 
@@ -483,24 +537,17 @@ async function execProbeBrand(
   const currentSubModel = isTV ? "" : (firstStep.subModels[0] || "default");
   firstStep.subModelIndex = 0;
 
-  // Probe commands (params only, client encodes with .so)
-  const probeCombos = isTV
-    ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
-    : [
-        { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-        { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
-        { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-        { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
-        { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
-      ];
-
   const subModelDesc = isTV ? "" : ` [子型号: ${currentSubModel}]`;
   console.log(`[probe] ───── 品牌: ${firstBrandCode}${subModelDesc} (第 1/${orderedBrands.length} 个) ─────`);
-  console.log(`[probe] 准备 ${probeCombos.length} 条探测命令(客户端本地编码)`);
+
+  // Generate probe commands with raw_timing from irext-engine
+  const probeCommandsWithTiming = await buildProbeCommandsWithTiming(firstBrandCode, isTV);
 
   // Build tool_call for client
   const brandDisplay = await getBrandDisplay(firstBrandCode);
-  const cmdDesc = probeCombos.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
+  const probeCount = probeCommandsWithTiming.length;
+  const combosForMsg = isTV ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
+  const cmdDesc = combosForMsg.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
   const hintMsg = hint ? `\n🎯 优先尝试: "${hint}" → ${brandDisplay}` : "";
   const deviceWord = isTV ? "电视" : "空调";
 
@@ -512,15 +559,9 @@ async function execProbeBrand(
       probe_brand: brandDisplay,
       probe_step: 1,
       probe_total: orderedBrands.length,
-      probe_commands: probeCombos.map((c: any) => ({
-        temperature: c.temperature || 0,
-        mode: c.mode || "",
-        fan_speed: c.fan_speed || "",
-        power: c.power,
-        label: c.label,
-      })),
+      probe_commands: probeCommandsWithTiming,
     },
-    message: `📡 正在探测品牌: **${brandDisplay}**${subModelDesc} (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCombos.length} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
+    message: `📡 正在探测品牌: **${brandDisplay}**${subModelDesc} (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCount} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
   };
 
   ctx.toolCall = toolCall;
@@ -539,13 +580,13 @@ async function execProbeBrand(
   ctx.session.currentProbeBrand = firstBrandCode;
   ctx.session.deviceId = deviceId;
 
-  console.log(`[probe] ✅ 品牌 ${firstBrandCode} 的 ${probeCombos.length} 条命令参数已准备`);
+  console.log(`[probe] ✅ 品牌 ${firstBrandCode} 的 ${probeCount} 条命令参数已准备`);
 
   return JSON.stringify({
     success: true,
     brand_code: firstBrandCode,
     brand_display: brandDisplay,
-    command_count: probeCombos.length,
+    command_count: probeCount,
     step: 1,
     total: orderedBrands.length,
     tool_call: toolCall,
@@ -647,16 +688,9 @@ async function execRespondProbe(
       const nextSubModel = currentStep.subModels[nextSubIdx];
       const brandDisplay = await getBrandDisplay(currentStep.brandCode);
       const isTV = ctx.session.deviceType === "tv";
-      const combos = isTV
-        ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
-        : [
-            { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-            { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
-            { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-            { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
-            { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
-          ];
+
       console.log(`[probe] 🔄 同品牌换子型号: ${currentStep.brandCode}/${nextSubModel}`);
+      const probeCmds = await buildProbeCommandsWithTiming(currentStep.brandCode, isTV);
       ctx.toolCall = {
         name: "probe_brand",
         args: {
@@ -665,7 +699,7 @@ async function execRespondProbe(
           probe_brand: brandDisplay,
           probe_step: currentStep.subModelIndex + 1,
           probe_total: session.steps.length,
-          probe_commands: combos.map(c => ({ temperature: c.temperature, mode: c.mode, fan_speed: c.fan_speed, power: c.power, label: c.label })),
+          probe_commands: probeCmds,
         },
         message: `🔄 ${brandDisplay} 换子型号 **${nextSubModel}** 继续探测...`,
       };
@@ -692,23 +726,19 @@ async function execRespondProbe(
   const isTV2 = ctx.session.deviceType === "tv";
   const nextSubModel = isTV2 ? "" : (nextStep.subModels[0] || "default");
   nextStep.subModelIndex = 0;
-  const combos2 = isTV2
-    ? [{ temperature: 0, mode: "", fan_speed: "", power: true, label: "开机/关机" } as any]
-    : [
-        { temperature: 26, mode: "cool", fan_speed: "auto",  power: true,  label: "开机+制冷26°C+自动风" },
-        { temperature: 24, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷24°C+强风" },
-        { temperature: 26, mode: "heat", fan_speed: "auto",  power: true,  label: "开机+制热26°C+自动风" },
-        { temperature: 18, mode: "cool", fan_speed: "high",  power: true,  label: "开机+制冷18°C+强风" },
-        { temperature: 26, mode: "cool", fan_speed: "auto",  power: false, label: "关机" },
-      ];
 
   const attemptedCount2 = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
+  const progressPct = Math.round((attemptedCount2 / session.steps.length) * 100);
 
-  console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} (${isTV2 ? "TV" : "AC"}) ─────`);
+  console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} (${isTV2 ? "TV" : "AC"}) (${progressPct}%) ─────`);
 
   const brandDisplay = await getBrandDisplay(brandCode);
-  const cmdDesc = probeCombos2.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
   const deviceWord2 = isTV2 ? "电视" : "空调";
+
+  // Generate probe commands with raw_timing
+  const probeCmds2 = await buildProbeCommandsWithTiming(brandCode, isTV2);
+  const probeCombos2 = isTV2 ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
+  const cmdDesc = probeCombos2.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
 
   const toolCall: ToolCall = {
     name: "probe_brand",
@@ -717,13 +747,7 @@ async function execRespondProbe(
       probe_brand: brandDisplay,
       probe_step: attemptedCount2,
       probe_total: session.steps.length,
-      probe_commands: probeCombos2.map((c: any) => ({
-        temperature: c.temperature || 0,
-        mode: c.mode || "",
-        fan_speed: c.fan_speed || "",
-        power: c.power,
-        label: c.label,
-      })),
+      probe_commands: probeCmds2,
     },
     message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount2}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${probeCombos2.length} 条红外命令：\n${cmdDesc}\n\n观察${deviceWord2}反应后说"有反应"或"没反应"。`,
   };
@@ -907,17 +931,31 @@ async function execControlAc(
 
   const toolMessage = `📡 已发送红外指令: ${changes.join("，")} → ${device.name} (${device.brandCode})`;
 
-  // Build tool_call for client: client uses local .so to encode + emit
+  // Generate raw timing via irext-engine (delegates to waveform-engine for AC)
+  const irCmd = await getACTiming(
+    device.brandCode!,
+    target.temperature,
+    target.mode,
+    target.fan_speed,
+    target.power,
+  );
+
+  console.log(`[control] AC encoded: ${device.brandCode} t=${target.temperature} ${target.mode} ${target.fan_speed} power=${target.power} | pulses=${irCmd.raw_timing.length}`);
+
+  // Build tool_call with raw timing — client just transmits
   const toolCall: ToolCall = {
     name: "control_ac",
     args: {
       brand_code: device.brandCode,
-      sub_model: device.subModel || undefined,
       temperature: target.temperature,
       mode: target.mode,
       fan_speed: target.fan_speed,
       power: target.power,
       device_id: device.id,
+      // ═══ NEW: raw timing data for direct transmission ═══
+      carrier_freq: irCmd.carrier_freq,
+      raw_timing: irCmd.raw_timing,
+      protocol: irCmd.protocol,
     },
     message: toolMessage,
   };
@@ -983,12 +1021,28 @@ async function execControlTv(
   };
   const cmdName = cmdNames[command] || command;
 
+  // Look up raw timing from irext decode_remote
+  let irCmd = await getFixedKeyTiming(device.brandCode!, device.deviceType || "tv", command);
+
+  // Fallback: if irext doesn't have this brand, try waveform-engine
+  if (!irCmd) {
+    console.log(`[control_tv] irext miss for ${device.brandCode}/${command}, trying waveform-engine`);
+    // For brands not in irext (e.g., from natrl DB), fall back to generic NEC
+    irCmd = await getACTiming(device.brandCode!, 0, "", "", true);
+    console.log(`[control_tv] fallback timing: ${irCmd.raw_timing.length} pulses`);
+  }
+
   const toolCall: ToolCall = {
     name: "control_tv",
     args: {
       brand_code: device.brandCode,
       command,
       device_id: device.id,
+      // ═══ NEW: raw timing data for direct transmission ═══
+      carrier_freq: irCmd.carrier_freq,
+      raw_timing: irCmd.raw_timing,
+      protocol: irCmd.protocol,
+      repeat: 3,  // TV commands typically need 3 repetitions
     },
     message: `📺 已发送红外指令: ${cmdName} → ${device.name} (${device.brandCode})`,
   };
@@ -999,7 +1053,7 @@ async function execControlTv(
   ctx.session.deviceType = device.deviceType || "tv";
   ctx.deviceId = device.id;
 
-  console.log(`[control] tool_call: control_tv brand=${device.brandCode} cmd=${command}`);
+  console.log(`[control] tool_call: control_tv brand=${device.brandCode} cmd=${command} pulses=${irCmd.raw_timing.length}`);
 
   return JSON.stringify({
     success: true,

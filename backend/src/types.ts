@@ -85,6 +85,11 @@ export interface ToolCallArgs {
   probe_step?: number;
   probe_total?: number;
   sub_model?: string;    // AC sub-model for encoding
+  // ═══ NEW (irext-powered): raw timing for direct transmission ═══
+  raw_timing?: number[];      // [mark_us, space_us, mark_us, ...]
+  carrier_freq?: number;      // IR carrier frequency in Hz
+  protocol?: string;          // protocol name for logging
+  repeat?: number;            // repeat count (TV: 3, AC: 1)
 }
 
 export interface ToolCall {
