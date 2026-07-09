@@ -40,25 +40,32 @@ export interface ToolContext {
 const probeSessions = new Map<string, ProbeSession>();
 
 import { matchBrandHint, getProbeOrder, getBrandDisplay } from "./brand-db";
-import { getACTiming, getFixedKeyTiming } from "./irext-engine";
+import { getACTiming, getFixedKeyTiming, encodeACByMd5, encodeKeyByMd5, resolveBrandNameEn, getIrextPool } from "./irext-engine";
 
-// ─── AC Sub-Model Mapping ──────────────────────────────────────────
-// ESP8266 library supports multiple remote models per brand.
-// If a brand has sub-models, probe iterates all of them.
-// If no sub-models defined, defaults to "default" and uses C++ hardcoded value.
-const AC_SUB_MODELS: Record<string, string[]> = {
-  whirlpool: ["DG11J13A", "DG11J191"],
-  gree:      ["YAW1F", "YBOFB", "YX1FSF"],
-  panasonic: ["kPanasonicLke", "kPanasonicNke", "kPanasonicDke", "kPanasonicJke", "kPanasonicCkp", "kPanasonicRkr"],
-  lg:        ["GE6711AR2853M", "AKB75215403", "AKB74955603", "AKB73757604", "LG6711A20083V"],
-  toshiba:   ["kToshibaGenericRemote_A", "kToshibaGenericRemote_B"],
-  fujitsu:   ["ARRAH2E", "ARDB1", "ARREB1E", "ARJW2", "ARRY4", "ARREW4E"],
-  haier:     ["V9014557_A", "V9014557_B"],
-  hitachi:   ["R_LT0541_HTA_A", "R_LT0541_HTA_B"],
-  tcl:       ["TAC09CHSD", "GZ055BE1"],
-  kelon:     ["DG11R201"],
-  // midea, daikin, mitsubishi, samsung, carrier, electra, coolix: single model, no sub-model enum
-};
+// ─── Brand remote variants — queried from irext DB at probe time ───
+// Replaces hardcoded AC_SUB_MODELS. Each irext remote_index entry for a
+// brand is a probe candidate (AC: 5 cmds each, TV: 1 cmd each).
+
+async function getRemoteVariants(
+  brandNameEn: string,
+  categoryId: number,
+): Promise<Array<{ remoteId: number; binaryMd5: string; remote: string; protocol: string }>> {
+  const p = getIrextPool();
+  const [rows] = await p.query(
+    `SELECT ri.id, ri.binary_md5, ri.remote, ri.protocol
+     FROM remote_index ri
+     JOIN brand b ON ri.brand_id = b.id
+     WHERE UPPER(b.name_en) = UPPER(?) AND ri.category_id = ?
+     ORDER BY ri.id`,
+    [brandNameEn, categoryId],
+  ) as any;
+  return (rows as any[]).map((r: any) => ({
+    remoteId: r.id,
+    binaryMd5: r.binary_md5,
+    remote: r.remote,
+    protocol: r.protocol,
+  }));
+}
 
 // ─── Probe command helper ──────────────────────────────────────────
 
@@ -75,8 +82,9 @@ const PROBE_COMBOS_TV = [
 ];
 
 async function buildProbeCommandsWithTiming(
-  brandCode: string,
+  binaryMd5: string,
   isTV: boolean,
+  categoryId: number,
 ): Promise<any[]> {
   const combos = isTV ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
   const result: any[] = [];
@@ -86,18 +94,16 @@ async function buildProbeCommandsWithTiming(
     let carrier_freq = 38000;
     try {
       if (isTV) {
-        const irCmd = await getFixedKeyTiming(brandCode, "tv", "power");
-        if (irCmd) {
-          raw_timing = irCmd.raw_timing;
-          carrier_freq = irCmd.carrier_freq;
-        }
+        const r = await encodeKeyByMd5(binaryMd5, categoryId, 0); // key=0 = POWER
+        raw_timing = r.raw_timing;
+        carrier_freq = r.carrier_freq;
       } else {
-        const irCmd = await getACTiming(brandCode, c.temperature || 26, c.mode || "cool", c.fan_speed || "auto", c.power);
-        raw_timing = irCmd.raw_timing;
-        carrier_freq = irCmd.carrier_freq;
+        const r = await encodeACByMd5(binaryMd5, c.temperature || 26, c.mode || "cool", c.fan_speed || "auto", c.power);
+        raw_timing = r.raw_timing;
+        carrier_freq = r.carrier_freq;
       }
     } catch (e: any) {
-      console.warn(`[probe] timing gen failed for ${brandCode}/${c.label}: ${e.message}`);
+      console.warn(`[probe] timing gen failed for md5=${binaryMd5.slice(0, 8)}/${c.label}: ${e.message}`);
     }
     result.push({
       temperature: c.temperature || 0,
@@ -111,7 +117,7 @@ async function buildProbeCommandsWithTiming(
   }
 
   const validCount = result.filter(c => c.raw_timing.length > 0).length;
-  console.log(`[probe] ${brandCode}: ${validCount}/${result.length} commands have raw_timing`);
+  console.log(`[probe] md5=${binaryMd5.slice(0, 8)}: ${validCount}/${result.length} commands have raw_timing`);
   return result;
 }
 
@@ -521,58 +527,78 @@ async function execProbeBrand(
   orderedBrands = matchedCodes;
   console.log(`[probe] 只探测用户指定的品牌: ${orderedBrands.join(", ")} (共 ${orderedBrands.length} 个品牌)`);
 
-  // ── Build probe session (one step per brand, sub-models per brand) ──
+  // ── Resolve irext brand name and category ──
+  const isTV = effectiveDeviceType === "tv";
+  const catId = isTV ? 2 : 1;
+  const firstBrandCode = orderedBrands[0];
+  const brandNameEn = resolveBrandNameEn(firstBrandCode) || firstBrandCode.toUpperCase();
+
+  // ── Query irext DB for ALL remote variants of this brand ──
+  const variants = await getRemoteVariants(brandNameEn, catId);
+  console.log(`[probe] ${brandNameEn} (cat=${catId}): 找到 ${variants.length} 个遥控器变体`);
+  for (const v of variants.slice(0, 5)) {
+    console.log(`[probe]   #${v.remoteId} ${v.protocol}/${v.remote} md5=${v.binaryMd5.slice(0, 8)}`);
+  }
+  if (variants.length > 5) console.log(`[probe]   ... 还有 ${variants.length - 5} 个`);
+
+  if (variants.length === 0) {
+    const deviceWord = isTV ? "电视" : "空调";
+    return JSON.stringify({
+      success: false,
+      status: "no_variants",
+      message: `"${hint}"品牌的${deviceWord}在数据库中没有任何遥控器数据，无法探测。`,
+    });
+  }
+
+  // ── Build probe session: one step per remote variant ──
   const session: ProbeSession = {
     deviceId,
-    steps: orderedBrands.map((brandCode) => ({
-      brandCode,
+    steps: variants.map((v) => ({
+      brandCode: firstBrandCode,
       attempted: false,
       userResponse: "pending",
       irCommand: null as any,
-      subModels: effectiveDeviceType === "ac" ? (AC_SUB_MODELS[brandCode] || ["default"]) : [],
+      subModels: [v.remote],        // variant name (e.g., "new_ac_9377")
       subModelIndex: 0,
       matchedSubModel: null,
-    })),
+      _binaryMd5: v.binaryMd5,      // stored for encoding
+      _categoryId: catId,
+    } as any)),
     matchedBrand: null,
     matchedSubModel: null,
     complete: false,
   };
   probeSessions.set(deviceId, session);
 
-  // ── Pick FIRST brand, first sub-model ──
-  const firstBrandCode = orderedBrands[0];
+  // ── Pick FIRST variant ──
+  const firstVariant = variants[0];
   const firstStep = session.steps[0];
   firstStep.attempted = true;
-
-  const isTV = effectiveDeviceType === "tv";
-  const currentSubModel = isTV ? "" : (firstStep.subModels[0] || "default");
   firstStep.subModelIndex = 0;
 
-  const subModelDesc = isTV ? "" : ` [子型号: ${currentSubModel}]`;
-  console.log(`[probe] ───── 品牌: ${firstBrandCode}${subModelDesc} (第 1/${orderedBrands.length} 个) ─────`);
+  console.log(`[probe] ───── 变体 1/${variants.length}: ${firstBrandCode}/${firstVariant.remote} (md5=${firstVariant.binaryMd5.slice(0, 8)}) ─────`);
 
-  // Generate probe commands with raw_timing from irext-engine
-  const probeCommandsWithTiming = await buildProbeCommandsWithTiming(firstBrandCode, isTV);
+  // Generate probe commands using this variant's specific binary_md5
+  const probeCommandsWithTiming = await buildProbeCommandsWithTiming(firstVariant.binaryMd5, isTV, catId);
 
   // Build tool_call for client
   const brandDisplay = await getBrandDisplay(firstBrandCode);
   const probeCount = probeCommandsWithTiming.length;
   const combosForMsg = isTV ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
   const cmdDesc = combosForMsg.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
-  const hintMsg = hint ? `\n🎯 优先尝试: "${hint}" → ${brandDisplay}` : "";
   const deviceWord = isTV ? "电视" : "空调";
 
   const toolCall: ToolCall = {
     name: "probe_brand",
     args: {
       brand_code: firstBrandCode,
-      sub_model: currentSubModel || undefined,
       probe_brand: brandDisplay,
       probe_step: 1,
-      probe_total: orderedBrands.length,
+      probe_total: variants.length,
+      variant_name: firstVariant.remote,
       probe_commands: probeCommandsWithTiming,
     },
-    message: `📡 正在探测品牌: **${brandDisplay}**${subModelDesc} (第 1/${orderedBrands.length} 个)${hintMsg}\n\n发送了 ${probeCount} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
+    message: `📡 正在探测: **${brandDisplay}** 遥控器变体 ${firstVariant.remote} (第 1/${variants.length} 个)\n\n发送了 ${probeCount} 条红外命令：\n${cmdDesc}\n\n⚠️ 手机将依次发射这些命令（间隔约2秒）。\n请观察${deviceWord}：\n• ${isTV ? "电视有开机/关机反应" : "听到\"嘀\"声或蜂鸣"} → 说"有反应"\n• 完全没动静 → 说"没反应"`,
   };
 
   ctx.toolCall = toolCall;
@@ -581,25 +607,26 @@ async function execProbeBrand(
   ctx.deviceId = deviceId;
   ctx.probeBrand = firstBrandCode;
   ctx.probeStep = 1;
-  ctx.probeTotal = orderedBrands.length;
+  ctx.probeTotal = variants.length;
 
   // Update session
   ctx.session.phase = "discovery";
   ctx.session.probingActive = true;
   ctx.session.probeStep = 1;
-  ctx.session.probeTotal = orderedBrands.length;
+  ctx.session.probeTotal = variants.length;
   ctx.session.currentProbeBrand = firstBrandCode;
   ctx.session.deviceId = deviceId;
 
-  console.log(`[probe] ✅ 品牌 ${firstBrandCode} 的 ${probeCount} 条命令参数已准备`);
+  console.log(`[probe] ✅ 变体 ${firstVariant.remote} 的 ${probeCount} 条命令参数已准备`);
 
   return JSON.stringify({
     success: true,
     brand_code: firstBrandCode,
     brand_display: brandDisplay,
+    variant_count: variants.length,
     command_count: probeCount,
     step: 1,
-    total: orderedBrands.length,
+    total: variants.length,
     tool_call: toolCall,
   });
 }
@@ -689,114 +716,90 @@ async function execRespondProbe(
     });
   }
 
-  // ── Not matched → try next sub-model or next brand ──
+  // ── Not matched → try next remote variant ──
   if (currentStep) {
-    // Try next sub-model of same brand first
-    const nextSubIdx = currentStep.subModelIndex + 1;
-    if (currentStep.subModels.length > 0 && nextSubIdx < currentStep.subModels.length) {
-      currentStep.subModelIndex = nextSubIdx;
-      currentStep.userResponse = "pending";
-      const nextSubModel = currentStep.subModels[nextSubIdx];
-      const brandDisplay = await getBrandDisplay(currentStep.brandCode);
-      const isTV = ctx.session.deviceType === "tv";
+    // Move to next variant in session.steps
+    currentStep.userResponse = "no";  // mark as tried
 
-      console.log(`[probe] 🔄 同品牌换子型号: ${currentStep.brandCode}/${nextSubModel}`);
-      const probeCmds = await buildProbeCommandsWithTiming(currentStep.brandCode, isTV);
-      ctx.toolCall = {
-        name: "probe_brand",
-        args: {
-          brand_code: currentStep.brandCode,
-          sub_model: nextSubModel,
-          probe_brand: brandDisplay,
-          probe_step: currentStep.subModelIndex + 1,
-          probe_total: session.steps.length,
-          probe_commands: probeCmds,
-        },
-        message: `🔄 ${brandDisplay} 换子型号 **${nextSubModel}** 继续探测...`,
-      };
-      return "";
+    const nextUnattempted = session.steps.findIndex((s: import("./types").ProbeStep) => !s.attempted);
+    if (nextUnattempted < 0) {
+      // All variants exhausted
+      session.complete = true;
+      probeSessions.delete(deviceId);
+      ctx.session.probingActive = false;
+      ctx.session.phase = "discovery";
+      ctx.phase = "discovery";
+
+      const totalVariants = session.steps.length;
+      const brandHint = ctx.session.brandHint;
+      const hintMsg = brandHint
+        ? `"${brandHint}"的 ${totalVariants} 个遥控器变体全部探测完毕，都没有反应。\n你可以试试换一个品牌名重新探测（比如"美的"、"海尔"等）。`
+        : `已尝试全部 ${totalVariants} 个变体均未匹配。建议检查手机红外硬件。`;
+
+      return JSON.stringify({ success: false, status: "exhausted", total_attempted: totalVariants,
+        message: hintMsg,
+      });
     }
-  }
 
-  // No more sub-models of current brand → try next matched brand
-  const nextUnattempted = session.steps.findIndex((s: import("./types").ProbeStep) => !s.attempted);
-  if (nextUnattempted < 0) {
-    // All brands + sub-models exhausted
-    session.complete = true;
-    probeSessions.delete(deviceId);
-    ctx.session.probingActive = false;
-    ctx.session.phase = "discovery";
+    const nextStep = session.steps[nextUnattempted];
+    nextStep.attempted = true;
+    const brandCode = nextStep.brandCode;
+    const isTV2 = ctx.session.deviceType === "tv";
+    const catId2 = isTV2 ? 2 : 1;
+    const nextMd5 = (nextStep as any)._binaryMd5 as string;
+    const nextVariant = nextStep.subModels[0];
+
+    const attemptedCount2 = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
+    const progressPct = Math.round((attemptedCount2 / session.steps.length) * 100);
+
+    console.log(`[probe] ───── 变体 ${attemptedCount2}/${session.steps.length}: ${brandCode}/${nextVariant} (md5=${nextMd5.slice(0, 8)}) (${progressPct}%) ─────`);
+
+    const brandDisplay = await getBrandDisplay(brandCode);
+    const deviceWord2 = isTV2 ? "电视" : "空调";
+
+    const probeCmds2 = await buildProbeCommandsWithTiming(nextMd5, isTV2, catId2);
+    const probeCombos2 = isTV2 ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
+    const cmdDesc = probeCombos2.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
+
+    const toolCall: ToolCall = {
+      name: "probe_brand",
+      args: {
+        brand_code: brandCode,
+        probe_brand: brandDisplay,
+        probe_step: attemptedCount2,
+        probe_total: session.steps.length,
+        variant_name: nextVariant,
+        probe_commands: probeCmds2,
+      },
+      message: `📡 正在探测: **${brandDisplay}** 遥控器变体 ${nextVariant} (第 ${attemptedCount2}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${probeCombos2.length} 条红外命令：\n${cmdDesc}\n\n观察${deviceWord2}反应后说"有反应"或"没反应"。`,
+    };
+
+    ctx.toolCall = toolCall;
     ctx.phase = "discovery";
+    ctx.setupStep = "probing";
+    ctx.probeBrand = brandCode;
+    ctx.probeStep = attemptedCount2;
+    ctx.probeTotal = session.steps.length;
 
-    // If user specified a brand, suggest trying another brand
-    const brandHint = ctx.session.brandHint;
-    const hintMsg = brandHint
-      ? `"${brandHint}"的所有子型号都没反应。\n你可以试试换一个品牌名重新探测（比如"美的"、"海尔"等）。`
-      : "已尝试全部品牌均未匹配。建议检查手机红外硬件。";
+    ctx.session.probeStep = attemptedCount2;
+    ctx.session.probeTotal = session.steps.length;
+    ctx.session.currentProbeBrand = brandCode;
+    ctx.session.probingActive = true;
+    ctx.session.phase = "discovery";
 
-    return JSON.stringify({ success: false, status: "exhausted", total_attempted: session.steps.length,
-      message: hintMsg,
+    console.log(`[probe] 📡 下一个变体 ${nextVariant} 的 ${probeCombos2.length} 条命令已准备 (进度 ${attemptedCount2}/${session.steps.length} = ${progressPct}%)`);
+
+    return JSON.stringify({
+      success: true,
+      brand_code: brandCode,
+      brand_display: brandDisplay,
+      command_count: probeCombos2.length,
+      step: attemptedCount2,
+      total: session.steps.length,
+      progress_pct: progressPct,
+      tool_call: toolCall,
     });
   }
-
-  const nextStep = session.steps[nextUnattempted];
-  nextStep.attempted = true;
-  const brandCode = nextStep.brandCode;
-  const isTV2 = ctx.session.deviceType === "tv";
-  const nextSubModel = isTV2 ? "" : (nextStep.subModels[0] || "default");
-  nextStep.subModelIndex = 0;
-
-  const attemptedCount2 = session.steps.filter((s: import("./types").ProbeStep) => s.attempted).length;
-  const progressPct = Math.round((attemptedCount2 / session.steps.length) * 100);
-
-  console.log(`[probe] ───── 第 ${attemptedCount2}/${session.steps.length} 个品牌: ${brandCode} (${isTV2 ? "TV" : "AC"}) (${progressPct}%) ─────`);
-
-  const brandDisplay = await getBrandDisplay(brandCode);
-  const deviceWord2 = isTV2 ? "电视" : "空调";
-
-  // Generate probe commands with raw_timing
-  const probeCmds2 = await buildProbeCommandsWithTiming(brandCode, isTV2);
-  const probeCombos2 = isTV2 ? PROBE_COMBOS_TV : PROBE_COMBOS_AC;
-  const cmdDesc = probeCombos2.map((c: any, i: number) => `  命令${i + 1}: ${c.label}`).join("\n");
-
-  const toolCall: ToolCall = {
-    name: "probe_brand",
-    args: {
-      brand_code: brandCode,
-      probe_brand: brandDisplay,
-      probe_step: attemptedCount2,
-      probe_total: session.steps.length,
-      probe_commands: probeCmds2,
-    },
-    message: `📡 正在探测品牌: **${brandDisplay}** (第 ${attemptedCount2}/${session.steps.length} 个, ${progressPct}%)\n\n发送了 ${probeCombos2.length} 条红外命令：\n${cmdDesc}\n\n观察${deviceWord2}反应后说"有反应"或"没反应"。`,
-  };
-
-  ctx.toolCall = toolCall;
-  ctx.phase = "discovery";
-  ctx.setupStep = "probing";
-  ctx.probeBrand = brandCode;
-  ctx.probeStep = attemptedCount2;
-  ctx.probeTotal = session.steps.length;
-
-  // Update session
-  ctx.session.probeStep = attemptedCount2;
-  ctx.session.probeTotal = session.steps.length;
-  ctx.session.currentProbeBrand = brandCode;
-  ctx.session.probingActive = true;
-  ctx.session.phase = "discovery";
-
-  console.log(`[probe] 📡 下一个品牌 ${brandCode} 的 ${probeCombos2.length} 条命令参数已准备 (进度 ${attemptedCount2}/${session.steps.length} = ${progressPct}%)`);
-
-  return JSON.stringify({
-    success: true,
-    brand_code: brandCode,
-    brand_display: brandDisplay,
-    command_count: probeCombos2.length,
-    step: attemptedCount2,
-    total: session.steps.length,
-    progress_pct: progressPct,
-    tool_call: toolCall,
-  });
 }
 
 async function execVerifyDevice(
@@ -961,6 +964,13 @@ async function execControlAc(
 
   console.log(`[control] AC encoded: ${device.brandCode} t=${target.temperature} ${target.mode} ${target.fan_speed} power=${target.power} | pulses=${irCmd.raw_timing.length}`);
 
+  if (irCmd.raw_timing.length === 0) {
+    return JSON.stringify({
+      success: false,
+      error: `品牌 ${device.brandCode} 的红外编码失败，请尝试重新探测。`,
+    });
+  }
+
   // Build tool_call with raw timing — client just transmits
   const toolCall: ToolCall = {
     name: "control_ac",
@@ -1040,15 +1050,14 @@ async function execControlTv(
   };
   const cmdName = cmdNames[command] || command;
 
-  // Look up raw timing from irext decode_remote
-  let irCmd = await getFixedKeyTiming(device.brandCode!, device.deviceType || "tv", command);
+  // Look up raw timing from irext
+  const irCmd = await getFixedKeyTiming(device.brandCode!, device.deviceType || "tv", command);
 
-  // Fallback: if irext doesn't have this brand, try waveform-engine
-  if (!irCmd) {
-    console.log(`[control_tv] irext miss for ${device.brandCode}/${command}, trying waveform-engine`);
-    // For brands not in irext (e.g., from natrl DB), fall back to generic NEC
-    irCmd = await getACTiming(device.brandCode!, 0, "", "", true);
-    console.log(`[control_tv] fallback timing: ${irCmd.raw_timing.length} pulses`);
+  if (!irCmd || irCmd.raw_timing.length === 0) {
+    return JSON.stringify({
+      success: false,
+      error: `品牌 ${device.brandCode} 的遥控器数据未找到，无法生成红外指令。`,
+    });
   }
 
   const toolCall: ToolCall = {

@@ -4,7 +4,7 @@
  * Architecture:
  *   - MySQL irext DB: brand → remote_index → binary_md5 → .bin file
  *   - irext-encode service: .bin + state → raw_timing
- *   - Fallback: generic NEC for unknown brands
+ *   - No fallback — unsupported brands return empty timing
  *
  * The frontend just receives raw_timing + carrier_freq and calls transmit().
  */
@@ -79,7 +79,7 @@ const BRAND_CODE_TO_NAME_EN: Record<string, string> = {
   changhong_nec_v1: "CHANG HONG",
 };
 
-function resolveBrandNameEn(brandCode: string): string | null {
+export function resolveBrandNameEn(brandCode: string): string | null {
   if (BRAND_CODE_TO_NAME_EN[brandCode]) return BRAND_CODE_TO_NAME_EN[brandCode];
   const lower = brandCode.toLowerCase();
   for (const [k, v] of Object.entries(BRAND_CODE_TO_NAME_EN)) {
@@ -343,16 +343,14 @@ export async function getACTiming(
 ): Promise<IRCommand> {
   const brandNameEn = resolveBrandNameEn(brandCode);
   if (!brandNameEn) {
-    console.log(`[irext] ⚠ Unknown AC brand: ${brandCode}, NEC fallback`);
-    const timing = buildGenericNEC(brandCode, temperature, mode, fanSpeed, powerOn);
-    return { brand_code: brandCode, protocol: "NEC (fallback)", carrier_freq: 38000, raw_timing: timing };
+    console.log(`[irext] ⚠ Unknown AC brand: ${brandCode} — not in brand map`);
+    return { brand_code: brandCode, protocol: "unsupported", carrier_freq: 38000, raw_timing: [] };
   }
 
-  const md5 = await resolveBinaryMd5(brandNameEn, 1); // category_id=1 = AC
+  const md5 = await resolveBinaryMd5(brandNameEn, 1);
   if (!md5) {
-    console.log(`[irext] ⚠ No .bin for ${brandNameEn} AC, NEC fallback`);
-    const timing = buildGenericNEC(brandCode, temperature, mode, fanSpeed, powerOn);
-    return { brand_code: brandCode, protocol: "NEC (fallback)", carrier_freq: 38000, raw_timing: timing };
+    console.log(`[irext] ⚠ No .bin for ${brandNameEn} AC — brand not in irext database`);
+    return { brand_code: brandCode, protocol: "unsupported", carrier_freq: 38000, raw_timing: [] };
   }
 
   try {
@@ -360,74 +358,47 @@ export async function getACTiming(
     console.log(`[irext] ✅ AC: ${brandNameEn} t=${temperature} ${mode} ${fanSpeed}: ${timing.length} pulses`);
     return { brand_code: brandCode, protocol: "irext", carrier_freq: 38000, raw_timing: timing };
   } catch (e: any) {
-    console.error(`[irext] AC encode failed for ${brandCode}: ${e.message}, NEC fallback`);
-    const timing = buildGenericNEC(brandCode, temperature, mode, fanSpeed, powerOn);
-    return { brand_code: brandCode, protocol: "NEC (fallback)", carrier_freq: 38000, raw_timing: timing };
+    console.error(`[irext] ❌ AC encode failed for ${brandCode}/${brandNameEn}: ${e.message}`);
+    return { brand_code: brandCode, protocol: "encode_failed", carrier_freq: 38000, raw_timing: [] };
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Generic NEC fallback
-// ═══════════════════════════════════════════════════════════════
-
-function brandAddr(brandCode: string): number {
-  let sum = 0;
-  for (let i = 0; i < brandCode.length; i++) sum = (sum * 31 + brandCode.charCodeAt(i)) & 0xFF;
-  return sum;
-}
-
-function buildGenericNEC(brandCode: string, temp: number, mode: string, fan: string, powerOn: boolean): number[] {
-  const HDR_M = 9000, HDR_S = 4500, BIT_M = 560, ONE_S = 1690, ZERO_S = 560, GAP = 40000;
-  const modeMap: Record<string, number> = { cool: 0, heat: 1, dry: 2, fan_only: 3, auto: 0 };
-  const fanMap: Record<string, number> = { auto: 0, low: 1, medium: 2, high: 3 };
-
-  const addr = brandAddr(brandCode);
-  const cmd = powerOn
-    ? (((temp - 16) & 0x0F) << 4) | ((modeMap[mode] || 0) << 2) | (fanMap[fan] || 0)
-    : 0x00;
-  const payload = (addr << 24) | (((~addr) & 0xFF) << 16) | (cmd << 8) | ((~cmd) & 0xFF);
-
-  const timing: number[] = [HDR_M, HDR_S];
-  for (let i = 31; i >= 0; i--) {
-    timing.push(BIT_M);
-    timing.push((payload >> i) & 1 ? ONE_S : ZERO_S);
+/**
+ * Encode AC state using a specific binary_md5 (bypasses brand resolution).
+ * For probing individual remote variants.
+ */
+export async function encodeACByMd5(
+  binaryMd5: string,
+  temperature: number,
+  mode: string,
+  fanSpeed: string,
+  powerOn: boolean,
+): Promise<{ raw_timing: number[]; carrier_freq: number }> {
+  try {
+    const timing = await callEncodeAC(binaryMd5, temperature, mode, fanSpeed, powerOn);
+    return { raw_timing: timing, carrier_freq: 38000 };
+  } catch (e: any) {
+    console.error(`[irext] AC encode by md5 ${binaryMd5.slice(0, 8)}: ${e.message}`);
+    return { raw_timing: [], carrier_freq: 38000 };
   }
-  timing.push(BIT_M, GAP);
-  return timing;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Brand listing from irext
-// ═══════════════════════════════════════════════════════════════
-
-export interface IrextBrand {
-  natrlCode: string;
-  nameEn: string;
-  nameZh: string;
-  categoryName: string;
-  priority: number;
-  remoteCount: number;
+/**
+ * Encode a fixed key using a specific binary_md5 (bypasses brand resolution).
+ */
+export async function encodeKeyByMd5(
+  binaryMd5: string,
+  category: number,
+  keyCode: number,
+): Promise<{ raw_timing: number[]; carrier_freq: number }> {
+  try {
+    const timing = await callEncodeKey(binaryMd5, category, keyCode);
+    return { raw_timing: timing, carrier_freq: 38000 };
+  } catch (e: any) {
+    console.error(`[irext] Key encode by md5 ${binaryMd5.slice(0, 8)}: ${e.message}`);
+    return { raw_timing: [], carrier_freq: 38000 };
+  }
 }
 
-export async function getIrextBrands(deviceType: string): Promise<IrextBrand[]> {
-  const cat = CATEGORY_TO_IR[deviceType];
-  if (!cat) return [];
-  const p = getIrextPool();
-  const [rows] = await p.query(
-    `SELECT b.name as zh, b.name_en, c.name as cat, b.priority, COUNT(ri.id) as rc
-     FROM brand b
-     JOIN category c ON b.category_id = c.id
-     LEFT JOIN remote_index ri ON ri.brand_id = b.id AND ri.category_id = b.category_id
-     WHERE b.category_id = ? AND b.status = 1
-     GROUP BY b.id ORDER BY b.priority ASC, rc DESC`,
-    [cat.id],
-  ) as any;
-  return (rows as any[]).map((r: any) => ({
-    natrlCode: (r.name_en || r.zh).toLowerCase().replace(/\s+/g, "_"),
-    nameEn: r.name_en || r.zh,
-    nameZh: r.zh,
-    categoryName: r.cat,
-    priority: r.priority || 999,
-    remoteCount: r.rc,
-  }));
-}
+/** Export pool for external modules (tools.ts needs it for getRemoteVariants) */
+export { getIrextPool };

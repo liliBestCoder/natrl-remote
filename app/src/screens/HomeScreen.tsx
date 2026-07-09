@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Device, CommandResult } from "../types";
 import { control, getDevices } from "../services/api";
-import { emitIr, encodeAndEmit, encodeAndEmitTV, encodeAndEmitProbeSequence, describeIrCommand, hasIrBlaster, hasEncoder, transmitRawNEC, emitRawTiming, executeToolCallWithTiming } from "../services/ir-emitter";
+import { emitIr, describeIrCommand, hasIrBlaster, transmitRawNEC, emitRawTiming, executeToolCallWithTiming } from "../services/ir-emitter";
 
 function StateBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -296,7 +296,6 @@ export default function HomeScreen() {
           setTimeout(() => setIrStatus(null), 8000);
 
         } else if (tc.name === "probe_brand" && tc.args.probe_commands) {
-          // Probe mode: prefer raw_timing from backend, fallback to .so encoder
           const brandCode = tc.args.brand_code || "unknown";
           const probeCmds = tc.args.probe_commands;
           const emitResults: string[] = [];
@@ -304,11 +303,12 @@ export default function HomeScreen() {
           const isTVProbe = probeCmds.length === 1 && (probeCmds[0] as any).temperature === 0;
           setProbeDeviceType(isTVProbe ? "tv" : "ac");
 
-          // Check if first command has raw_timing (new irext mode)
           const hasRawTiming = probeCmds.length > 0 && (probeCmds[0] as any).raw_timing?.length > 0;
 
-          if (hasRawTiming) {
-            // ═══ NEW MODE: emit raw_timing from backend directly ═══
+          if (!hasRawTiming) {
+            setDiag(`❌ 后端未能生成红外编码\n→ 该品牌遥控器数据可能不完整`);
+            setTimeout(() => setIrStatus(null), 8000);
+          } else {
             for (let i = 0; i < probeCmds.length; i++) {
               const cmd = probeCmds[i] as any;
               const idx = i + 1;
@@ -330,82 +330,12 @@ export default function HomeScreen() {
               setDiag(`❌ 无红外硬件\n→ 手机不支持红外发射 (${brandCode})`);
             }
             setTimeout(() => setIrStatus(null), 10000);
-
-          } else if (isTVProbe) {
-            // Legacy TV probe
-            const irResult = await encodeAndEmitTV(brandCode, "power");
-            if (irResult.success) {
-              setIrStatus(`📺 已发送: ${brandCode} 开关命令\n观察电视是否有反应...`);
-            } else {
-              setDiag(`❌ TV发射失败\n→ brand: ${brandCode}, reason: ${irResult.method}`);
-            }
-            setTimeout(() => setIrStatus(null), 10000);
-          } else {
-            // Legacy AC probe via .so encoder
-            encodeAndEmitProbeSequence(
-              brandCode,
-              probeCmds.map((c: any) => ({
-                temperature: c.temperature,
-                mode: c.mode,
-                fanSpeed: c.fan_speed,
-                power: c.power,
-                label: c.label,
-              })),
-              2000,
-              (tc.args as any).sub_model,
-              (idx, total, label, success) => {
-                const icon = success ? "📡" : "❌";
-                emitResults.push(`${icon} ${idx}/${total}: ${label}`);
-                setIrStatus(`🔍 探测: ${brandCode}\n${emitResults.slice(-3).join("\n")}`);
-              }
-            ).then((seqResults) => {
-              const successCount = seqResults.filter((r) => r.success).length;
-              const total = probeCmds.length;
-              const allNoEncoder = seqResults.every((r) => r.method === "no_encoder");
-              if (allNoEncoder) {
-                setDiag(`❌ 红外编码模块未加载 (libnatrl_ir.so)\n→ 请确认APK包含原生库或手机架构匹配`);
-              } else if (successCount === total) {
-                setIrStatus(`✅ ${total}条命令已全部发射 (${brandCode})\n观察空调是否有反应...`);
-              } else if (successCount > 0) {
-                setIrStatus(`⚠️ ${successCount}/${total} 条已发射 (${brandCode})\n观察空调是否有反应...`);
-              } else {
-                setDiag(`❌ 无红外硬件\n→ 手机不支持红外发射 (${brandCode})`);
-              }
-              setTimeout(() => setIrStatus(null), 10000);
-            });
           }
 
-        } else if (tc.name === "control_ac") {
-          // Legacy fallback
-          const irResult = await encodeAndEmit(
-            tc.args.brand_code || "gree",
-            tc.args.temperature || 26,
-            tc.args.mode || "cool",
-            tc.args.fan_speed || "auto",
-            (tc.args as any).sub_model,
-          );
-          if (irResult.success) {
-            setIrStatus(`📡 红外已发射 (${tc.args.brand_code} ${tc.args.temperature}°C ${tc.args.mode})`);
-          } else {
-            setDiag(irResult.method === "no_encoder"
-              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)\n→ 无法发射AC指令`
-              : `❌ AC发射失败\n→ brand: ${tc.args.brand_code}, reason: ${irResult.method}`);
-          }
-          setTimeout(() => setIrStatus(null), 6000);
-
-        } else if (tc.name === "control_tv") {
-          // Legacy fallback
-          const irResult = await encodeAndEmitTV(
-            tc.args.brand_code || "hisense",
-            tc.args.command || "power",
-          );
-          if (irResult.success) {
-            setIrStatus(`📺 红外已发射 (${tc.args.brand_code} ${tc.args.command})`);
-          } else {
-            setDiag(irResult.method === "no_encoder"
-              ? `❌ 红外编码模块未加载 (libnatrl_ir.so)\n→ 无法发射TV指令`
-              : `❌ TV发射失败\n→ brand: ${tc.args.brand_code}, reason: ${irResult.method}`);
-          }
+        } else if (tc.name === "control_ac" || tc.name === "control_tv") {
+          // Should not reach here — raw_timing path above handles both.
+          // If we do, it means backend sent a toolCall without raw_timing.
+          setDiag(`❌ 后端未提供红外编码数据\n→ 请检查 irext-encode 服务是否正常`);
           setTimeout(() => setIrStatus(null), 6000);
         }
       }
